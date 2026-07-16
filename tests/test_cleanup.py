@@ -119,6 +119,23 @@ def test_destroy_by_tag_is_idempotent(tmp_path):
     assert all(d.startswith("droplets:") for d in new)
 
 
+def test_destroy_by_tag_tolerates_missing_tag(tmp_path):
+    """Provisioning that died before the first droplet leaves no tag; DO's
+    destroy_by_tag then 404s "tag ... does not exist". Teardown must swallow that
+    and still reap volumes + VPC, not abort."""
+    cfg = _dummy_config(tmp_path)
+    fake = _FakeDO(cfg.tag)
+
+    def _boom(tag_name):
+        raise RuntimeError(f"tag {tag_name} does not exist")
+
+    fake.droplets.destroy_by_tag = _boom
+
+    do.destroy_by_tag(cfg, fake)  # must not raise
+    assert any(d.startswith("volumes:") for d in fake.deletes)
+    assert any(d.startswith("vpcs:") for d in fake.deletes)
+
+
 def test_static_ip_allocation(tmp_path):
     cfg = _dummy_config(tmp_path)
     assert cfg.microvm_static_ip(0) == "192.168.100.10/24"
