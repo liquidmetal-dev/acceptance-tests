@@ -98,7 +98,9 @@ def load(dotenv_path: str | None = None) -> Config:
     """Load and validate configuration from the environment / .env file."""
     load_dotenv(dotenv_path, override=False)
 
-    token = os.environ.get("DO_API_TOKEN", "").strip()
+    # Drop non-printable/control chars (e.g. a stray ESC from a colorized paste) that a
+    # plain .strip() would leave in place and corrupt the Authorization header.
+    token = "".join(c for c in os.environ.get("DO_API_TOKEN", "") if c.isprintable()).strip()
     if not token:
         raise ConfigError("DO_API_TOKEN is required")
 
