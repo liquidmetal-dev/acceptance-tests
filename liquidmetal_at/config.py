@@ -23,6 +23,18 @@ def _bool(v: str) -> bool:
     return v.strip().lower() in ("1", "true", "yes", "on")
 
 
+def _env(name: str, default: str = "") -> str:
+    """Env value, treating a python-dotenv inline-comment leak as unset.
+
+    python-dotenv does not strip an inline comment on an *empty-value* line, so a
+    ``.env`` line like ``RUN_ID=   # optional`` yields the comment text as the value.
+    Such a leak would corrupt DigitalOcean resource names; treat a value starting
+    with ``#`` as unset.
+    """
+    v = os.environ.get(name, default).strip()
+    return "" if v.startswith("#") else v
+
+
 class ConfigError(RuntimeError):
     """Raised when required configuration is missing or invalid."""
 
@@ -104,7 +116,7 @@ def load(dotenv_path: str | None = None) -> Config:
     if not token:
         raise ConfigError("DO_API_TOKEN is required")
 
-    run_id = os.environ.get("RUN_ID", "").strip() or f"at-{secrets.token_hex(4)}"
+    run_id = _env("RUN_ID") or f"at-{secrets.token_hex(4)}"
 
     kernel = os.environ.get("MICROVM_KERNEL_IMAGE", "").strip()
     rootfs = os.environ.get("MICROVM_ROOTFS_IMAGE", "").strip()
@@ -131,15 +143,15 @@ def load(dotenv_path: str | None = None) -> Config:
         ssh_private_key_path=priv,
         microvm_kernel_image=kernel,
         microvm_rootfs_image=rootfs,
-        microvm_kernel_filename=os.environ.get("MICROVM_KERNEL_FILENAME", "").strip(),
-        microvm_namespace=os.environ.get("MICROVM_NAMESPACE", "").strip() or run_id,
+        microvm_kernel_filename=_env("MICROVM_KERNEL_FILENAME"),
+        microvm_namespace=_env("MICROVM_NAMESPACE") or run_id,
         microvm_vcpu=int(os.environ.get("MICROVM_VCPU", "1")),
         microvm_mem_mb=int(os.environ.get("MICROVM_MEM_MB", "512")),
         microvm_count=int(os.environ.get("MICROVM_COUNT", "4")),
         microvm_subnet_cidr=os.environ.get("MICROVM_SUBNET_CIDR", "192.168.100.0/24"),
         brigade_grpc_port=int(os.environ.get("BRIGADE_GRPC_PORT", "9091")),
         brigade_status_port=int(os.environ.get("BRIGADE_STATUS_PORT", "9600")),
-        brigade_cookie=os.environ.get("BRIGADE_COOKIE", "").strip() or run_id,
+        brigade_cookie=_env("BRIGADE_COOKIE") or run_id,
         brigade_min_cluster_size=int(os.environ.get("BRIGADE_MIN_CLUSTER_SIZE", "2")),
         brigade_ref=os.environ.get("BRIGADE_REF", "main"),
         flintlock_ref=os.environ.get("FLINTLOCK_REF", "main"),
