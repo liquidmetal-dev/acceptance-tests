@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Build brigade from source and run it as a named Erlang node under systemd.
+# config/config.exs is rendered separately (peer-aware) and copied in before compile.
+set -euo pipefail
+
+BRIGADE_DIR=/opt/brigade
+MISE=/usr/local/bin/mise
+NODE_NAME="brigade@{{ private_ip }}"
+COOKIE={{ cookie }}
+GRPC_PORT={{ grpc_port }}
+STATUS_PORT={{ status_port }}
+
+cd "$BRIGADE_DIR"
+$MISE trust || true
+$MISE install
+
+echo "== fetching + compiling brigade deps =="
+$MISE exec -- mix local.hex --force
+$MISE exec -- mix local.rebar --force
+$MISE exec -- mix deps.get
+$MISE exec -- mix compile
+
+echo "== writing brigade systemd unit (node ${NODE_NAME}) =="
+cat >/etc/systemd/system/brigade.service <<EOF
+[Unit]
+Description=brigade orchestrator (acceptance)
+After=network-online.target flintlockd.service epmd.socket
+Wants=network-online.target
+Requires=flintlockd.service
+
+[Service]
+WorkingDirectory=${BRIGADE_DIR}
+Environment=HOME=/root
+Environment=RELEASE_COOKIE=${COOKIE}
+ExecStart=${MISE} exec -- elixir --name ${NODE_NAME} --cookie ${COOKIE} -S mix run --no-halt
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now brigade.service
+
+echo "== waiting for brigade gRPC :${GRPC_PORT} and status :${STATUS_PORT} =="
+ok=0
+for i in $(seq 1 90); do
+  if timeout 2 bash -c "</dev/tcp/127.0.0.1/${GRPC_PORT}" 2>/dev/null \
+     && timeout 2 bash -c "</dev/tcp/127.0.0.1/${STATUS_PORT}" 2>/dev/null; then
+    ok=1; break
+  fi
+  sleep 2
+done
+if [ "$ok" != "1" ]; then
+  echo "FATAL: brigade not listening"; journalctl -u brigade --no-pager | tail -80; exit 1
+fi
+echo "brigade up on ${NODE_NAME}"
