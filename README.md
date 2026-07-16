@@ -39,7 +39,7 @@ tests/                 conftest fixtures + 5 scenarios
 ## Prerequisites
 
 - Python 3.10+
-- A DigitalOcean API token with write access
+- A DigitalOcean API token with the right scopes — see [DigitalOcean API token](#digitalocean-api-token)
 - An SSH keypair (the public key is uploaded to DO and injected into droplets + microVMs)
 - **microVM OCI images** (kernel + rootfs) that boot with sshd and honour cloud-init
   user-data — you supply these (see `.env.example`).
@@ -51,6 +51,37 @@ make venv                 # create .venv, install runtime + dev deps
 make proto                # generate gRPC stubs from vendored protos
 cp .env.example .env      # then fill in DO_API_TOKEN + MICROVM_*_IMAGE + SSH key paths
 ```
+
+### DigitalOcean API token
+
+The suite authenticates to DigitalOcean **only** — set your Personal Access Token (PAT) as
+`DO_API_TOKEN` in `.env`. Create it in the [DigitalOcean Control
+Panel](https://cloud.digitalocean.com) → **API** → **Personal access tokens** → **Generate New
+Token**.
+
+> **`you are not authorised`?** You almost certainly generated a **Read Only** token. It can
+> list resources but not create/delete them, so the run fails on the first write (create VPC /
+> droplet). Use **Full Access**, or a **Custom Scopes** token with the write scopes below.
+
+The token needs write access to the resources the suite provisions and reaps. Two options:
+
+- **Full Access** — simplest; works out of the box.
+- **Custom Scopes** (least privilege) — select exactly these, one group per resource the suite
+  touches (`infra/do.py`, `infra/reaper.py`). Block storage and droplet **`create`/`delete`**
+  are the ones most often missed:
+
+  ```
+  droplet:create        droplet:read        droplet:delete
+  block_storage:create  block_storage:read  block_storage:delete
+  vpc:create            vpc:read            vpc:delete
+  firewall:create       firewall:read       firewall:delete
+  ssh_key:create        ssh_key:read
+  tag:create            tag:read            tag:delete
+  ```
+
+See DigitalOcean's [personal access token
+docs](https://docs.digitalocean.com/reference/api/create-personal-access-token/) for details on
+custom scopes.
 
 ## Run
 
