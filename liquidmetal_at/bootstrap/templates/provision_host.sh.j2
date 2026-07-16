@@ -21,17 +21,17 @@ test -e /dev/kvm || { echo "FATAL: /dev/kvm not present - nested virt unavailabl
 echo "== provisioning flintlock stack (containerd, firecracker, thinpool) =="
 cd "$FLINTLOCK_DIR"
 # provision.sh sets up containerd + firecracker + a devicemapper thinpool.
-# --disk points the thinpool at our raw block volume; --thinpool names it.
+# --dev builds a loop-device thinpool named by --thinpool; under --dev the
+# --disk flag is ignored, so we omit it (raw block volume is not used here).
 if [ -x ./hack/scripts/provision.sh ]; then
   ./hack/scripts/provision.sh all \
     --dev \
-    --yes \
-    --disk "$DISK" \
+    --unattended \
     --thinpool "$THINPOOL" || {
       echo "provision.sh 'all' failed; retrying component subcommands"
-      ./hack/scripts/provision.sh devpool --thinpool "$THINPOOL" --disk "$DISK" --yes || true
-      ./hack/scripts/provision.sh containerd --thinpool "$THINPOOL" --yes || true
-      ./hack/scripts/provision.sh firecracker --yes || true
+      ./hack/scripts/provision.sh devpool --thinpool "$THINPOOL" --unattended || true
+      ./hack/scripts/provision.sh containerd --thinpool "$THINPOOL" --unattended || true
+      ./hack/scripts/provision.sh firecracker || true
     }
 else
   echo "FATAL: provision.sh not found in $FLINTLOCK_DIR/hack/scripts"; exit 1
