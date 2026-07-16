@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+artifacts/
+# Generated gRPC stubs (rebuilt by `make proto`)
+liquidmetal_at/flintlock/gen/flapi/
+liquidmetal_at/flintlock/gen/fltypes/
+.pytest_cache/
+*.egg-info/

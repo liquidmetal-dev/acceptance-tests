@@ -1,0 +1,26 @@
+import Config
+
+# Brigade compile-time configuration for one node of the acceptance cluster.
+# Rendered per-host with peer IPs known at provision time, then compiled before
+# `mix run`. Ports, quorum, and capacity all come from the suite config.
+config :brigade,
+  grpc_port: {{ grpc_port }},
+  status_port: {{ status_port }},
+  flintlock_endpoint: "localhost:{{ flintlock_grpc_port }}",
+  flintlock_auth_token: nil,
+  auth_token: nil,
+  min_cluster_size: {{ min_cluster_size }},
+  host: [
+    labels: %{"node" => "host{{ node_index }}"},
+    capacity: [vcpu: {{ capacity_vcpu }}, memory_mb: {{ capacity_mem_mb }}],
+    reserve: [vcpu: 1, memory_mb: 1024],
+    providers: []
+  ],
+  cluster_topologies: [
+    brigade: [
+      strategy: Cluster.Strategy.Epmd,
+      config: [hosts: [{{ erlang_hosts }}]]
+    ]
+  ]
+
+config :logger, level: :info

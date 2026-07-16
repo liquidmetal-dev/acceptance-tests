@@ -1,0 +1,47 @@
+[project]
+name = "liquidmetal-acceptance-tests"
+version = "0.1.0"
+description = "Acceptance test suite for Liquid Metal (flintlock orchestrated by brigade on DigitalOcean)"
+requires-python = ">=3.10"
+dependencies = [
+    "pydo>=0.4.0",
+    "paramiko>=3.4.0",
+    "grpcio>=1.60.0",
+    "protobuf>=4.25.0",
+    "tenacity>=8.2.0",
+    "python-dotenv>=1.0.0",
+    "PyYAML>=6.0",
+    "requests>=2.31.0",
+    "Jinja2>=3.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-timeout>=2.2.0",
+    "grpcio-tools>=1.60.0",
+    "ruff>=0.4.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -v"
+# Whole-suite guard rail; individual phases have their own tenacity budgets.
+timeout = 2700
+log_cli = true
+log_cli_level = "INFO"
+markers = [
+    "e2e: full end-to-end test that provisions real DigitalOcean infrastructure",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B"]
+# Generated gRPC stubs are not linted.
+exclude = ["liquidmetal_at/flintlock/gen/**"]
+
+[tool.setuptools.packages.find]
+include = ["liquidmetal_at*"]

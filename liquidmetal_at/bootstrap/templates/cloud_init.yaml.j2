@@ -1,0 +1,42 @@
+#cloud-config
+# Base bootstrap that runs during droplet boot, in parallel across both hosts.
+# Only host-local, coordination-free work lives here; peer-aware steps (brigade
+# cluster join) are done later over SSH. The slow Elixir/OTP toolchain download is
+# warmed here so it overlaps boot instead of blocking the SSH phase.
+package_update: true
+packages:
+  - git
+  - curl
+  - build-essential
+  - dmsetup
+  - bc
+  - unzip
+  - jq
+  - ca-certificates
+  - autoconf
+  - m4
+  - libncurses-dev
+  - libssl-dev
+
+write_files:
+  - path: /etc/modules-load.d/flintlock.conf
+    content: |
+      kvm
+      kvm_intel
+      kvm_amd
+      tun
+      macvlan
+
+runcmd:
+  - [ modprobe, kvm ]
+  - [ bash, -lc, "modprobe kvm_intel || modprobe kvm_amd || true" ]
+  - [ modprobe, tun ]
+  - [ bash, -lc, "test -e /dev/kvm && echo '/dev/kvm present' || echo 'WARNING: no /dev/kvm'" ]
+  # Install mise (toolchain manager) system-wide and warm Elixir/OTP for brigade.
+  - [ bash, -lc, "curl -fsSL https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh" ]
+  - [ bash, -lc, "git clone --depth 1 --branch {{ flintlock_ref }} https://github.com/liquidmetal-dev/flintlock /opt/flintlock || git clone https://github.com/liquidmetal-dev/flintlock /opt/flintlock" ]
+  - [ bash, -lc, "git clone --depth 1 --branch {{ brigade_ref }} https://github.com/liquidmetal-dev/brigade /opt/brigade || git clone https://github.com/liquidmetal-dev/brigade /opt/brigade" ]
+  # Warm the Elixir/OTP toolchain in the brigade checkout (best-effort; SSH phase re-runs it).
+  - [ bash, -lc, "cd /opt/brigade && /usr/local/bin/mise trust || true; /usr/local/bin/mise install || true" ]
+  - [ mkdir, -p, /var/lib/lm-acceptance ]
+  - [ bash, -lc, "touch /var/lib/lm-acceptance/base-ready" ]
