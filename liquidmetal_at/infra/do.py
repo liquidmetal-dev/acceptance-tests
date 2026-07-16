@@ -50,6 +50,20 @@ def client(cfg: Config) -> Client:
     return Client(token=cfg.do_token)
 
 
+def _ensure_tag(c: Client, tag: str) -> None:
+    """Create the run's tag up front so every resource reliably attaches to it.
+
+    DO only dependably materializes a tag when a *droplet* is created with it; a VPC
+    (name-matched), firewall (tags = match selector), or volume won't. Creating it here
+    guarantees the tag exists before any resource references it — and before teardown
+    tries to destroy droplets by it. Idempotent: DO returns 422 if it already exists.
+    """
+    try:
+        c.tags.create(body={"name": tag})
+    except Exception as exc:  # noqa: BLE001 - already-exists is fine
+        log.debug("tag %s create: %s", tag, exc)
+
+
 # --- SSH key ---------------------------------------------------------------
 
 
@@ -166,6 +180,7 @@ def provision(cfg: Config, user_data_for: callable) -> Infra:
     c = client(cfg)
     log.info("provisioning DO infra tag=%s region=%s", cfg.tag, cfg.do_region)
 
+    _ensure_tag(c, cfg.tag)
     ssh_key_id = _ensure_ssh_key(c, cfg)
     vpc_id, vpc_cidr = _create_vpc(c, cfg)
     firewall_id = _create_firewall(c, cfg)
@@ -222,12 +237,19 @@ def destroy_by_tag(cfg: Config, c: Client | None = None) -> None:
                 description="delete firewall",
             )
 
-    # droplets by tag
-    retry_call(
-        lambda: c.droplets.destroy_by_tag(tag_name=tag),
-        timeout=120,
-        description="destroy droplets by tag",
-    )
+    # droplets by tag. A missing tag (provisioning died before the first droplet was
+    # created) means "nothing to destroy" — 404 is success, not a retryable error, so
+    # swallow it and let teardown continue to volumes + VPC below.
+    def _destroy_droplets() -> None:
+        try:
+            c.droplets.destroy_by_tag(tag_name=tag)
+        except Exception as exc:  # noqa: BLE001
+            if "does not exist" in str(exc).lower():
+                log.info("no tag %s (nothing to destroy by tag)", tag)
+                return
+            raise
+
+    retry_call(_destroy_droplets, timeout=120, description="destroy droplets by tag")
 
     # volumes by name prefix (must be detached — droplets are gone above)
     def _delete_volumes() -> None:
