@@ -67,16 +67,20 @@ The token needs write access to the resources the suite provisions and reaps. Tw
 
 - **Full Access** — simplest; works out of the box.
 - **Custom Scopes** (least privilege) — select exactly these, one group per resource the suite
-  touches (`infra/do.py`, `infra/reaper.py`). Block storage and droplet **`create`/`delete`**
-  are the ones most often missed:
+  touches (`infra/do.py`, `infra/reaper.py`). The ones most often missed: droplet and block
+  storage **`create`/`delete`**, and **`block_storage_action`** — attaching a volume to a
+  droplet is a *volume action*, gated separately from `block_storage` (volume create/delete).
+  Omit it and the run fails with `you are missing the required permission
+  block_storage_action:create` right after the volume is created:
 
   ```
-  droplet:create        droplet:read        droplet:delete
-  block_storage:create  block_storage:read  block_storage:delete
-  vpc:create            vpc:read            vpc:delete
-  firewall:create       firewall:read       firewall:delete
-  ssh_key:create        ssh_key:read
-  tag:create            tag:read            tag:delete
+  droplet:create               droplet:read               droplet:delete
+  block_storage:create         block_storage:read         block_storage:delete
+  block_storage_action:create  block_storage_action:read  block_storage_action:delete
+  vpc:create                   vpc:read                   vpc:delete
+  firewall:create              firewall:read              firewall:delete
+  ssh_key:create               ssh_key:read
+  tag:create                   tag:read                   tag:delete
   ```
 
 See DigitalOcean's [personal access token
