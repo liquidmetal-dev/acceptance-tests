@@ -19,7 +19,9 @@ cp .env.example .env      # then fill DO_API_TOKEN + MICROVM_*_IMAGE + SSH key p
 ```
 
 `DO_API_TOKEN` needs **Full Access** (or a custom-scopes token with create/read/delete on
-droplet, block_storage, vpc, firewall, ssh_key, tag). A read-only token fails on first write.
+droplet, block_storage, block_storage_action, vpc, firewall, ssh_key, tag). A read-only
+token fails on first write. `block_storage_action` is easy to miss — attaching a volume to a
+droplet is a *volume action*, gated separately from `block_storage` (volume create/delete).
 
 ## Commands
 
