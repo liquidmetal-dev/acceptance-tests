@@ -3,7 +3,9 @@
 microVM IPs live on a host's internal bridge net, unreachable from the runner, so we
 ProxyJump through the hosting droplet (bastion) to the VM's deterministic static IP.
 Which host holds a given VM is scheduler-decided, so we try each droplet as bastion.
-The guest's hostname (set via cloud-init) must equal the VM id.
+The guest's hostname (set via cloud-init) must equal the VM id. We then run real in-guest
+commands over that session: ``ls /`` (guest filesystem is live) and ``ping 1.1.1.1`` (outbound
+network works through the host bridge's MASQUERADE NAT) — not just SSH login + hostname.
 
 Cross-node placement was blocked by brigade's node-local Mnesia (fixed: liquidmetal-dev/brigade#15,
 our report #13) and by the host endpoint defaulting to localhost (fixed in brigade_config.exs.j2 —
@@ -76,6 +78,13 @@ def test_microvms_reachable_by_ssh(config, fl_client, cluster, vm_index):
                 assert out.strip() == expected_hostname
                 # prove we can run an arbitrary command too
                 guest.run("uname -a", check=True, timeout=30)
+                # prove the guest filesystem is live
+                rc, out, _ = guest.run("ls /", check=True, timeout=30)
+                assert rc == 0
+                log.info("microVM %s ls / -> %s", target_ip, out.split())
+                # prove egress works through the host bridge MASQUERADE NAT
+                # (raw IP: no DNS dependency; 1.1.1.1 reliably answers ICMP)
+                guest.run("ping -c 3 -W 5 1.1.1.1", check=True, timeout=30)
             finally:
                 guest.close()
                 bastion.close()

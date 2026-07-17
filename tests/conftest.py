@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import itertools
 import logging
+import os
 
 import pytest
 
@@ -22,6 +23,27 @@ from liquidmetal_at.infra import do
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("conftest")
+
+# pydo runs on the Azure SDK, whose default HttpLoggingPolicy logs every DO API
+# request/response at INFO. Quiet the azure.* tree by default; re-enable with the
+# --log-http flag or LOG_HTTP=true (see pytest_configure).
+logging.getLogger("azure").setLevel(logging.WARNING)
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--log-http",
+        action="store_true",
+        default=False,
+        help="Emit DigitalOcean API HTTP request/response logs (Azure/pydo pipeline).",
+    )
+
+
+def pytest_configure(config):
+    enabled = config.getoption("--log-http") or config_mod._bool(
+        os.environ.get("LOG_HTTP", "false")
+    )
+    logging.getLogger("azure").setLevel(logging.INFO if enabled else logging.WARNING)
 
 
 @pytest.fixture(scope="session")
