@@ -49,7 +49,9 @@ def build_spec(cfg: Config, index: int) -> microvm_pb2.MicroVMSpec:
     iface = microvm_pb2.NetworkInterface(
         device_id="eth1",
         type=microvm_pb2.NetworkInterface.IfaceType.TAP,
-        address=microvm_pb2.StaticAddress(address=static_ip),
+        address=microvm_pb2.StaticAddress(
+            address=static_ip, gateway=cfg.microvm_gateway_cidr
+        ),
     )
 
     user_data = _cloud_init_user_data(cfg.ssh_public_key, vm_id)

@@ -18,7 +18,15 @@ log = logging.getLogger("ssh")
 
 class CommandError(RuntimeError):
     def __init__(self, cmd: str, rc: int, out: str, err: str):
-        super().__init__(f"command failed (rc={rc}): {cmd}\n{err.strip() or out.strip()}")
+        # Show BOTH streams: provision scripts echo progress/failures to stdout,
+        # while apt/debconf noise lands on stderr. Picking one stream hides the
+        # real failure whenever the other stream is non-empty.
+        parts = [f"command failed (rc={rc}): {cmd}"]
+        if out.strip():
+            parts.append(f"--- stdout ---\n{out.strip()}")
+        if err.strip():
+            parts.append(f"--- stderr ---\n{err.strip()}")
+        super().__init__("\n".join(parts))
         self.cmd, self.rc, self.out, self.err = cmd, rc, out, err
 
 

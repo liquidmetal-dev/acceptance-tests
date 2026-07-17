@@ -3,6 +3,9 @@
 # Idempotent-ish: safe to re-run; provision.sh skips already-installed components.
 set -euo pipefail
 
+# apt runs non-interactively over SSH (no tty); silence debconf/dpkg-preconfigure.
+export DEBIAN_FRONTEND=noninteractive
+
 FLINTLOCK_DIR=/opt/flintlock
 THINPOOL={{ thinpool }}
 DISK={{ disk }}
@@ -27,6 +30,7 @@ if [ -x ./hack/scripts/provision.sh ]; then
   ./hack/scripts/provision.sh all \
     --dev \
     --unattended \
+    --insecure \
     --thinpool "$THINPOOL" || {
       echo "provision.sh 'all' failed; retrying component subcommands"
       ./hack/scripts/provision.sh devpool --thinpool "$THINPOOL" --unattended || true
@@ -53,7 +57,32 @@ echo "== detecting containerd socket =="
 CONTAINERD_SOCK=/run/containerd-dev/containerd.sock
 [ -S "$CONTAINERD_SOCK" ] || CONTAINERD_SOCK=/run/containerd/containerd.sock
 
+echo "== setting up flintlock bridge {{ bridge_name }} =="
+# flintlock attaches guest TAP devices to this Linux bridge. The guests' static IPs
+# live on {{ guest_subnet }} with the bridge as their gateway; masquerade gives outbound.
+BRIDGE={{ bridge_name }}
+BRIDGE_ADDR={{ bridge_addr }}
+GUEST_SUBNET={{ guest_subnet }}
+if ! ip link show "$BRIDGE" >/dev/null 2>&1; then
+  ip link add name "$BRIDGE" type bridge
+fi
+ip addr replace "$BRIDGE_ADDR" dev "$BRIDGE"
+ip link set "$BRIDGE" up
+sysctl -qw net.ipv4.ip_forward=1
+UPLINK=$(ip route show default | awk '/default/{print $5; exit}')
+if [ -n "$UPLINK" ]; then
+  iptables -t nat -C POSTROUTING -s "$GUEST_SUBNET" ! -o "$BRIDGE" -j MASQUERADE 2>/dev/null \
+    || iptables -t nat -A POSTROUTING -s "$GUEST_SUBNET" ! -o "$BRIDGE" -j MASQUERADE
+fi
+iptables -C FORWARD -i "$BRIDGE" -j ACCEPT 2>/dev/null || iptables -A FORWARD -i "$BRIDGE" -j ACCEPT
+iptables -C FORWARD -o "$BRIDGE" -j ACCEPT 2>/dev/null || iptables -A FORWARD -o "$BRIDGE" -j ACCEPT
+
 echo "== writing flintlockd systemd unit =="
+# provision.sh's 'flintlock' step (via 'all') already installed + started its own
+# flintlockd.service bound to the host internal IP. Stop it so our unit — which binds
+# 0.0.0.0 for the 127.0.0.1 healthcheck + cross-node brigade — can take over cleanly.
+# Stopping before daemon-reload also avoids systemd's "Current command vanished" churn.
+systemctl stop flintlockd.service 2>/dev/null || true
 cat >/etc/systemd/system/flintlockd.service <<EOF
 [Unit]
 Description=flintlockd (acceptance)
@@ -65,6 +94,7 @@ ExecStart=/usr/local/bin/flintlockd run \\
   --grpc-endpoint=0.0.0.0:${GRPC_PORT} \\
   --containerd-socket=${CONTAINERD_SOCK} \\
   --parent-iface=${PARENT_IFACE} \\
+  --bridge-name=${BRIDGE} \\
   --insecure --verbosity 1
 Restart=on-failure
 RestartSec=3
@@ -74,7 +104,8 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now flintlockd.service
+systemctl enable flintlockd.service
+systemctl restart flintlockd.service   # force-apply our config even if one was running
 
 echo "== waiting for flintlockd :${GRPC_PORT} =="
 for i in $(seq 1 60); do

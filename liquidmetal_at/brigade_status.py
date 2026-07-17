@@ -35,6 +35,15 @@ def healthy(ip: str, port: int) -> bool:
 def cluster_size(ip: str, port: int) -> int:
     """Best-effort count of nodes the given brigade node sees in its partition."""
     data = _get(ip, port)
+    # brigade reports membership under `partition` (size / members). Prefer it: the
+    # top-level `hosts` list holds only this node's own managed host (len 1), so the
+    # fallback loops below would otherwise undercount a healthy cluster.
+    part = data.get("partition")
+    if isinstance(part, dict):
+        if isinstance(part.get("size"), int):
+            return part["size"]
+        if isinstance(part.get("members"), list):
+            return len(part["members"])
     for key in ("cluster_size", "clusterSize", "size", "quorum_size"):
         if isinstance(data.get(key), int):
             return data[key]

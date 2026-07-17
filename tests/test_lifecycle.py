@@ -1,4 +1,9 @@
-"""Happy-path microVM lifecycle through brigade: create -> get -> list -> delete."""
+"""Happy-path microVM lifecycle through brigade: create -> get -> list -> delete.
+
+Was blocked on 2 nodes by brigade's node-local Mnesia (GetMicroVM 404'd from the non-scheduler
+node); fixed upstream by the Mnesia mesh-replication + singleton-failover work
+(liquidmetal-dev/brigade#15 & #16; our reports #13 & #14). Should pass on latest brigade main.
+"""
 from __future__ import annotations
 
 import pytest

@@ -38,6 +38,14 @@ def infra(request, config):
     yield provisioned
 
     failed = request.session.testsfailed > 0
+    if failed:
+        # Capture host logs + mesh diagnostics before any keep/destroy decision, so a
+        # failed run is analyzable from artifacts/ even when infra is left up. Never let a
+        # collection error leak infra by skipping the teardown below.
+        try:
+            logs.collect(config, provisioned)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("log collection failed: %s", exc)
     if failed and config.keep_infra_on_failure:
         log.warning(
             "KEEP_INFRA_ON_FAILURE set and tests failed - leaving infra tag=%s up. "
@@ -45,10 +53,7 @@ def infra(request, config):
             config.tag,
         )
         return
-    try:
-        logs.collect(config, provisioned)
-    finally:
-        do.destroy_by_tag(config, provisioned.client)
+    do.destroy_by_tag(config, provisioned.client)
 
 
 @pytest.fixture(scope="session")
@@ -72,18 +77,23 @@ def brigade_node(cluster):
 
 
 @pytest.fixture(scope="session")
-def fl_client(config, cluster, brigade_node):
+def fl_client(request, config, cluster, brigade_node):
     """gRPC client to brigade's north edge; best-effort namespace cleanup on teardown."""
     client = FlintlockClient(brigade_node.public_ip, config.brigade_grpc_port)
     yield client
-    try:
-        for vm in client.list(config.microvm_namespace):
-            try:
-                client.delete(vm.spec.uid)
-            except Exception:  # noqa: BLE001
-                pass
-    except Exception:  # noqa: BLE001
-        pass
+    # On failure, leave the microVMs in place: deleting removes their
+    # /var/lib/flintlock/vm/<uid>/firecracker.log, which logs.collect (run later in the
+    # infra teardown) needs to explain why a guest never reached CREATED. The droplets are
+    # destroyed wholesale afterwards anyway, so this per-VM tidy only matters on success.
+    if not request.session.testsfailed:
+        try:
+            for vm in client.list(config.microvm_namespace):
+                try:
+                    client.delete(vm.spec.uid)
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception:  # noqa: BLE001
+            pass
     client.close()
 
 

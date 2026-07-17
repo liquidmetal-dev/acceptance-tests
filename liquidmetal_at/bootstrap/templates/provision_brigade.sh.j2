@@ -24,7 +24,7 @@ echo "== writing brigade systemd unit (node ${NODE_NAME}) =="
 cat >/etc/systemd/system/brigade.service <<EOF
 [Unit]
 Description=brigade orchestrator (acceptance)
-After=network-online.target flintlockd.service epmd.socket
+After=network-online.target flintlockd.service
 Wants=network-online.target
 Requires=flintlockd.service
 
@@ -32,7 +32,10 @@ Requires=flintlockd.service
 WorkingDirectory=${BRIGADE_DIR}
 Environment=HOME=/root
 Environment=RELEASE_COOKIE=${COOKIE}
-ExecStart=${MISE} exec -- elixir --name ${NODE_NAME} --cookie ${COOKIE} -S mix run --no-halt
+# Bind EPMD + Erlang distribution to the private IP (loopback added implicitly) so peers
+# can query this node's EPMD. The default socket-activated epmd binds loopback only.
+Environment=ERL_EPMD_ADDRESS={{ private_ip }}
+ExecStart=${MISE} exec -- elixir --name ${NODE_NAME} --cookie ${COOKIE} --erl "-kernel inet_dist_listen_min {{ dist_min }} inet_dist_listen_max {{ dist_max }}" -S mix run --no-halt
 Restart=on-failure
 RestartSec=5
 
@@ -41,6 +44,12 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
+# Drop the loopback-only socket-activated epmd so beam starts its own bound to the private
+# IP (via ERL_EPMD_ADDRESS above). If a loopback epmd is already bound on 4369, beam reuses
+# it instead of rebinding, so stop + mask before starting brigade.
+systemctl stop epmd.socket epmd.service 2>/dev/null || true
+systemctl mask epmd.socket epmd.service 2>/dev/null || true
+pkill -x epmd 2>/dev/null || true
 systemctl enable --now brigade.service
 
 echo "== waiting for brigade gRPC :${GRPC_PORT} and status :${STATUS_PORT} =="

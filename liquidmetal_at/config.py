@@ -105,6 +105,29 @@ class Config:
         prefix = self.microvm_subnet_cidr.split("/")[1]
         return f"{base}.{10 + index}/{prefix}"
 
+    @property
+    def microvm_gateway_cidr(self) -> str:
+        """Address (CIDR) for the host bridge / guest default gateway, e.g. 192.168.100.1/24."""
+        base = self.microvm_subnet_cidr.split("/")[0].rsplit(".", 1)[0]
+        prefix = self.microvm_subnet_cidr.split("/")[1]
+        return f"{base}.1/{prefix}"
+
+    @property
+    def microvm_gateway_ip(self) -> str:
+        """Bare gateway IP (no CIDR) assigned to guests' default route."""
+        return self.microvm_gateway_cidr.split("/")[0]
+
+
+def _validate_microvm_shape(mem_mb: int, vcpu: int, kernel_filename: str) -> None:
+    """Reject specs flintlock will refuse deep in CreateMicroVM (validate tags on
+    core/models: MemoryInMb gte=1024,lte=32768; VCPU gte=1,lte=64; Kernel.Filename required)."""
+    if not 1024 <= mem_mb <= 32768:
+        raise ConfigError(f"MICROVM_MEM_MB={mem_mb} out of range; flintlock requires 1024-32768")
+    if not 1 <= vcpu <= 64:
+        raise ConfigError(f"MICROVM_VCPU={vcpu} out of range; flintlock requires 1-64")
+    if not kernel_filename:
+        raise ConfigError("MICROVM_KERNEL_FILENAME is required by flintlock (e.g. boot/vmlinux)")
+
 
 def load(dotenv_path: str | None = None) -> Config:
     """Load and validate configuration from the environment / .env file."""
@@ -143,10 +166,13 @@ def load(dotenv_path: str | None = None) -> Config:
         ssh_private_key_path=priv,
         microvm_kernel_image=kernel,
         microvm_rootfs_image=rootfs,
-        microvm_kernel_filename=_env("MICROVM_KERNEL_FILENAME"),
+        # flintlock requires a non-empty Kernel.Filename; boot/vmlinux is the path in the
+        # standard liquidmetal kernel images (e.g. firecracker-kernel).
+        microvm_kernel_filename=_env("MICROVM_KERNEL_FILENAME") or "boot/vmlinux",
         microvm_namespace=_env("MICROVM_NAMESPACE") or run_id,
         microvm_vcpu=int(os.environ.get("MICROVM_VCPU", "1")),
-        microvm_mem_mb=int(os.environ.get("MICROVM_MEM_MB", "512")),
+        # flintlock validates memory_in_mb as gte=1024,lte=32768; 512 is always rejected.
+        microvm_mem_mb=int(os.environ.get("MICROVM_MEM_MB", "1024")),
         microvm_count=int(os.environ.get("MICROVM_COUNT", "4")),
         microvm_subnet_cidr=os.environ.get("MICROVM_SUBNET_CIDR", "192.168.100.0/24"),
         brigade_grpc_port=int(os.environ.get("BRIGADE_GRPC_PORT", "9091")),
@@ -165,4 +191,5 @@ def load(dotenv_path: str | None = None) -> Config:
         keep_infra_on_failure=_bool(os.environ.get("KEEP_INFRA_ON_FAILURE", "false")),
         artifacts_dir=_expand(os.environ.get("ARTIFACTS_DIR", "./artifacts")),
     )
+    _validate_microvm_shape(cfg.microvm_mem_mb, cfg.microvm_vcpu, cfg.microvm_kernel_filename)
     return cfg
