@@ -9,7 +9,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 
 from ..config import Config
-from ..infra.do import Droplet, Infra
+from ..infra.do import ERLANG_DIST_HIGH, ERLANG_DIST_LOW, Droplet, Infra
 from ..remote.ssh import SSH
 from .render import render
 
@@ -20,6 +20,7 @@ log = logging.getLogger("bootstrap")
 THINPOOL_DISK = "/dev/sda"
 THINPOOL_NAME = "flintlock-thinpool"
 PARENT_IFACE = "eth1"  # DO private-network interface inside the VPC
+BRIDGE_NAME = "flintlock0"  # host bridge flintlock attaches guest TAP devices to
 
 
 def _erlang_hosts(private_ips: list[str]) -> str:
@@ -46,6 +47,9 @@ def _provision_flintlock(cfg: Config, ssh: SSH) -> None:
         thinpool=THINPOOL_NAME,
         disk=THINPOOL_DISK,
         parent_iface=PARENT_IFACE,
+        bridge_name=BRIDGE_NAME,
+        bridge_addr=cfg.microvm_gateway_cidr,
+        guest_subnet=cfg.microvm_subnet_cidr,
         flintlock_grpc_port=cfg.flintlock_grpc_port,
     )
     ssh.put(script, "/tmp/provision_host.sh")
@@ -61,6 +65,7 @@ def _provision_brigade(
         grpc_port=cfg.brigade_grpc_port,
         status_port=cfg.brigade_status_port,
         flintlock_grpc_port=cfg.flintlock_grpc_port,
+        private_ip=private_ip,
         min_cluster_size=cfg.brigade_min_cluster_size,
         node_index=node_index,
         capacity_vcpu=cap_vcpu,
@@ -77,6 +82,8 @@ def _provision_brigade(
         cookie=cfg.brigade_cookie,
         grpc_port=cfg.brigade_grpc_port,
         status_port=cfg.brigade_status_port,
+        dist_min=ERLANG_DIST_LOW,
+        dist_max=ERLANG_DIST_HIGH,
     )
     ssh.put(script, "/tmp/provision_brigade.sh")
     ssh.sudo("bash /tmp/provision_brigade.sh", timeout=1800)

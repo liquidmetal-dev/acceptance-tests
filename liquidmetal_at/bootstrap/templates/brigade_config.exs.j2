@@ -4,9 +4,19 @@ import Config
 # Rendered per-host with peer IPs known at provision time, then compiled before
 # `mix run`. Ports, quorum, and capacity all come from the suite config.
 config :brigade,
+  # seams brigade reads without a code default — must be rendered or the scheduler
+  # starts with strategy: nil and crashes on the first placement (nil.filter/2).
+  store: Brigade.Store.Mnesia,
+  host_driver: Brigade.HostDriver.Local,
+  scheduler_strategy: Brigade.Scheduler.Strategy.LeastLoaded,
   grpc_port: {{ grpc_port }},
   status_port: {{ status_port }},
-  flintlock_endpoint: "localhost:{{ flintlock_grpc_port }}",
+  # Must be the node's PRIVATE IP, not localhost: SelfRegister records this as the host's
+  # endpoint into the (mesh-replicated) store, and the scheduler node dials it via
+  # HostDriver.Local to place a VM on THIS host. With "localhost" every host resolves to the
+  # scheduler node's own flintlock, so all VMs pile onto one host (no spread). flintlockd
+  # listens on 0.0.0.0:{{ flintlock_grpc_port }}, so the private IP is reachable cross-node.
+  flintlock_endpoint: "{{ private_ip }}:{{ flintlock_grpc_port }}",
   flintlock_auth_token: nil,
   auth_token: nil,
   min_cluster_size: {{ min_cluster_size }},

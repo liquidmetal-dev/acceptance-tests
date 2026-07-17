@@ -35,53 +35,73 @@ def _ids_on_host(config, droplet) -> set[str]:
         ssh.close()
 
 
+# Cross-node host aggregation was broken until brigade's Mnesia mesh-replication fix
+# (liquidmetal-dev/brigade#15; our upstream report #13). Before it, each node's scheduler saw
+# only its own host (schedulable_hosts:1), packed every VM onto one host, and refused the (N)th
+# with RESOURCE_EXHAUSTED. On latest main every node's scheduler sees every registered host, so
+# N VMs must spread across BOTH flintlock hosts — which is what this test asserts.
 @pytest.mark.e2e
 def test_placement_spreads_across_hosts(config, fl_client, cluster, vm_index):
     n = config.microvm_count
     assert n >= 2, "placement test needs MICROVM_COUNT >= 2"
 
+    # Always reap what we created, even when the (N)th create fails under the single-host
+    # limitation above — otherwise the orphaned VMs occupy the one schedulable host and
+    # starve every later test (e.g. ssh_reachability) of capacity.
     created = []
-    for _ in range(n):
-        idx = vm_index()
-        vm = fl_client.create(spec.build_create_request(config, idx))
-        created.append(vm.spec.uid)
-
-    for uid in created:
-        fl_client.wait_state(uid, State.CREATED, timeout=config.timeout_vm_create)
-
-    all_ids = {v.spec.id for v in fl_client.list(config.microvm_namespace)}
-    our_ids = {vm_id for vm_id in all_ids if vm_id.startswith(config.run_id)}
-    assert len(our_ids) >= n
-
-    # Authoritative spread check via per-host flintlock state.
-    per_host = {d.public_ip: _ids_on_host(config, d) for d in cluster.droplets}
-    for ip, ids in per_host.items():
-        log.info("host %s holds %d microvms: %s", ip, len(ids), sorted(ids))
-
-    hosting = [ip for ip, ids in per_host.items() if ids & our_ids]
-    assert len(hosting) == len(cluster.droplets), (
-        f"expected microVMs on all {len(cluster.droplets)} hosts, got {len(hosting)}: {per_host}"
-    )
-
-    # No VM double-placed across hosts.
-    host_sets = [ids & our_ids for ids in per_host.values()]
-    for i in range(len(host_sets)):
-        for j in range(i + 1, len(host_sets)):
-            assert not (host_sets[i] & host_sets[j]), "a microVM appears on two hosts"
-
-    # Union covers all our VMs.
-    union = set().union(*host_sets) if host_sets else set()
-    assert our_ids <= union
-
-    # Opportunistic brigade /status cross-check (tolerant; skip if schema unknown).
     try:
-        pmap = brigade_status.placement_map(
-            cluster.droplets[0].public_ip, config.brigade_status_port
-        )
-        if pmap:
-            assert len({h for u, h in pmap.items() if u in created}) >= 2
-    except Exception as exc:  # noqa: BLE001
-        log.info("brigade /status placement map unavailable (%s); relied on host state", exc)
+        for _ in range(n):
+            idx = vm_index()
+            vm = fl_client.create(spec.build_create_request(config, idx))
+            created.append(vm.spec.uid)
 
-    for uid in created:
-        fl_client.delete(uid)
+        for uid in created:
+            fl_client.wait_state(uid, State.CREATED, timeout=config.timeout_vm_create)
+
+        all_ids = {v.spec.id for v in fl_client.list(config.microvm_namespace)}
+        our_ids = {vm_id for vm_id in all_ids if vm_id.startswith(config.run_id)}
+        assert len(our_ids) >= n
+
+        # Authoritative spread check via per-host flintlock state.
+        per_host = {d.public_ip: _ids_on_host(config, d) for d in cluster.droplets}
+        for ip, ids in per_host.items():
+            log.info("host %s holds %d microvms: %s", ip, len(ids), sorted(ids))
+
+        hosting = [ip for ip, ids in per_host.items() if ids & our_ids]
+        assert len(hosting) == len(cluster.droplets), (
+            f"expected microVMs on all {len(cluster.droplets)} hosts, "
+            f"got {len(hosting)}: {per_host}"
+        )
+
+        # No VM double-placed across hosts.
+        host_sets = [ids & our_ids for ids in per_host.values()]
+        for i in range(len(host_sets)):
+            for j in range(i + 1, len(host_sets)):
+                assert not (host_sets[i] & host_sets[j]), "a microVM appears on two hosts"
+
+        # Union covers all our VMs.
+        union = set().union(*host_sets) if host_sets else set()
+        assert our_ids <= union
+
+        # Opportunistic brigade /status cross-check (tolerant; skip if schema unknown).
+        try:
+            pmap = brigade_status.placement_map(
+                cluster.droplets[0].public_ip, config.brigade_status_port
+            )
+            if pmap:
+                assert len({h for u, h in pmap.items() if u in created}) >= 2
+        except Exception as exc:  # noqa: BLE001
+            log.info("brigade /status placement map unavailable (%s); relied on host state", exc)
+    finally:
+        # Wait for deletes to complete, not just fire them: with a single schedulable host
+        # its capacity is tight, so a lingering delete would starve the next test.
+        for uid in created:
+            try:
+                fl_client.delete(uid)
+            except Exception:  # noqa: BLE001
+                pass
+        for uid in created:
+            try:
+                fl_client.wait_deleted(uid, timeout=config.timeout_vm_delete)
+            except Exception:  # noqa: BLE001
+                pass

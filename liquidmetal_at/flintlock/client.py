@@ -12,7 +12,7 @@ import grpc
 from flapi import microvms_pb2, microvms_pb2_grpc  # noqa: E402
 from fltypes import microvm_pb2  # noqa: E402
 
-from ..waiter import wait_until  # noqa: E402
+from ..waiter import retry_call, wait_until  # noqa: E402
 
 # side-effect import puts gen/ on sys.path
 from . import _GEN  # noqa: F401
@@ -21,9 +21,20 @@ log = logging.getLogger("flintlock")
 
 State = microvm_pb2.MicroVMStatus.MicroVMState
 
+# gRPC codes brigade returns transiently while its scheduler partition is mid-change
+# (a node joining/leaving briefly drops quorum and halves visible capacity). A create
+# in that window is safe to retry — the cluster re-settles within seconds.
+_TRANSIENT_CODES = frozenset(
+    {grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.RESOURCE_EXHAUSTED}
+)
+
 
 class MicroVMNotFound(RuntimeError):
     pass
+
+
+class _TransientSchedulerError(RuntimeError):
+    """A retryable brigade create failure (momentarily no quorum / no capacity)."""
 
 
 class FlintlockClient:
@@ -44,9 +55,30 @@ class FlintlockClient:
 
     # --- CRUD ---
 
-    def create(self, request: microvms_pb2.CreateMicroVMRequest) -> microvm_pb2.MicroVM:
-        resp = self._stub.CreateMicroVM(request, timeout=self._timeout)
-        return resp.microvm
+    def create(
+        self, request: microvms_pb2.CreateMicroVMRequest, *, retry_timeout: float = 120
+    ) -> microvm_pb2.MicroVM:
+        """Create a microVM via brigade, retrying transient scheduler churn.
+
+        brigade briefly returns UNAVAILABLE / RESOURCE_EXHAUSTED when its 2-node
+        partition is re-forming (a node join/leave drops quorum + halves capacity for a
+        few seconds). Retry those; surface everything else (bad spec, etc.) immediately.
+        """
+
+        def _once() -> microvm_pb2.MicroVM:
+            try:
+                return self._stub.CreateMicroVM(request, timeout=self._timeout).microvm
+            except grpc.RpcError as e:
+                if e.code() in _TRANSIENT_CODES:
+                    raise _TransientSchedulerError(f"{e.code()}: {e.details()}") from e
+                raise
+
+        return retry_call(
+            _once,
+            timeout=retry_timeout,
+            exceptions=(_TransientSchedulerError,),
+            description="CreateMicroVM (transient scheduler churn)",
+        )
 
     def get(self, uid: str) -> microvm_pb2.MicroVM:
         try:
