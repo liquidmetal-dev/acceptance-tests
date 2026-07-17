@@ -32,7 +32,7 @@ def _ssh_via_any_host(config, cluster, microvm_ip: str):
 
     "No route to host" from a bastion means the guest's interface isn't up yet (cloud-init still
     bringing up the static IP + sshd), not that the VM is on another host. On nested virt this can
-    lag CREATED by a minute+, so cycle BOTH hosts under a generous deadline rather than trying each
+    lag CREATED by a minute+, so cycle ALL hosts under a generous deadline rather than trying each
     once — which host actually holds the VM is scheduler-decided.
     """
     deadline = time.monotonic() + config.timeout_vm_create

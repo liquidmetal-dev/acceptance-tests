@@ -80,14 +80,14 @@ def infra(request, config):
 
 @pytest.fixture(scope="session")
 def hosts(config, infra):
-    """Bootstrap flintlock + brigade on both droplets."""
+    """Bootstrap flintlock + brigade on all droplets."""
     bootstrap_all(config, infra)
     return infra
 
 
 @pytest.fixture(scope="session")
 def cluster(config, hosts):
-    """Block until the 2-node brigade Erlang mesh has formed."""
+    """Block until the N-node brigade Erlang mesh has formed."""
     wait_for_cluster(config, hosts)
     return hosts
 

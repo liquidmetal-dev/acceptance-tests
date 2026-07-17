@@ -1,5 +1,5 @@
 #cloud-config
-# Base bootstrap that runs during droplet boot, in parallel across both hosts.
+# Base bootstrap that runs during droplet boot, in parallel across all hosts.
 # Only host-local, coordination-free work lives here; peer-aware steps (brigade
 # cluster join) are done later over SSH. The slow Elixir/OTP toolchain download is
 # warmed here so it overlaps boot instead of blocking the SSH phase.

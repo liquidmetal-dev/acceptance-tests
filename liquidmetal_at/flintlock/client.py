@@ -60,8 +60,8 @@ class FlintlockClient:
     ) -> microvm_pb2.MicroVM:
         """Create a microVM via brigade, retrying transient scheduler churn.
 
-        brigade briefly returns UNAVAILABLE / RESOURCE_EXHAUSTED when its 2-node
-        partition is re-forming (a node join/leave drops quorum + halves capacity for a
+        brigade briefly returns UNAVAILABLE / RESOURCE_EXHAUSTED when its cluster
+        partition is re-forming (a node join/leave drops quorum + cuts capacity for a
         few seconds). Retry those; surface everything else (bad spec, etc.) immediately.
         """
 

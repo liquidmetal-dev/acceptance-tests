@@ -1,1 +1,1 @@
-"""Turn bare droplets into a 2-node flintlock + brigade cluster."""
+"""Turn bare droplets into an N-node flintlock + brigade cluster."""
