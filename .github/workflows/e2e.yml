@@ -1,0 +1,96 @@
+name: e2e
+
+# Manually triggered end-to-end acceptance run. Provisions real DigitalOcean
+# infrastructure and costs money, so there is no push/PR trigger — only
+# workflow_dispatch. See AGENTS.md / README.md for what the suite does.
+on:
+  workflow_dispatch:
+    inputs:
+      brigade_ref:
+        description: brigade git ref to test
+        default: main
+      flintlock_ref:
+        description: flintlock git ref to test
+        default: main
+      do_region:
+        description: DigitalOcean region (must offer nested-virt droplets + block storage)
+        default: nyc3
+      droplet_size:
+        description: DigitalOcean droplet size slug
+        default: s-4vcpu-8gb
+      microvm_kernel_image:
+        description: microVM kernel OCI image
+        default: ghcr.io/liquidmetal-dev/flintlock-kernel:5.10
+      microvm_rootfs_image:
+        description: microVM rootfs OCI image
+        default: ghcr.io/liquidmetal-dev/capmvm-kubernetes:1.28
+      run_id:
+        description: Optional RUN_ID (blank = suite auto-generates at-<hex>)
+        default: ""
+
+# Serialize runs: never cancel an in-flight run (cancelling mid-e2e skips the
+# suite's own teardown and leaks DO infra), and serialization is what makes the
+# global reaper safety-net below safe to invoke.
+concurrency:
+  group: e2e-acceptance
+  cancel-in-progress: false
+
+# Least privilege: checkout only. upload-artifact uses its own backend, not GITHUB_TOKEN scopes.
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      # Map dispatch inputs + secret to the exact var names config.py reads.
+      DO_API_TOKEN: ${{ secrets.DO_API_TOKEN }}
+      BRIGADE_REF: ${{ inputs.brigade_ref }}
+      FLINTLOCK_REF: ${{ inputs.flintlock_ref }}
+      DO_REGION: ${{ inputs.do_region }}
+      DO_DROPLET_SIZE: ${{ inputs.droplet_size }}
+      MICROVM_KERNEL_IMAGE: ${{ inputs.microvm_kernel_image }}
+      MICROVM_ROOTFS_IMAGE: ${{ inputs.microvm_rootfs_image }}
+      RUN_ID: ${{ inputs.run_id }}
+    steps:
+      - name: Preflight — require DO_API_TOKEN
+        run: |
+          if [ -z "${DO_API_TOKEN}" ]; then
+            echo "::error::DO_API_TOKEN secret is not set. Add it in repo Settings → Secrets and variables → Actions." >&2
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Generate ephemeral SSH keypair
+        run: |
+          mkdir -p "${HOME}/.ssh"
+          # Fresh unencrypted ed25519 key per run — paramiko can't prompt for a
+          # passphrase; the suite uploads the pubkey to DO at provision time.
+          ssh-keygen -t ed25519 -N "" -C "lm-acceptance-${GITHUB_RUN_ID}" -f "${HOME}/.ssh/id_ed25519"
+          echo "SSH_PRIVATE_KEY_PATH=${HOME}/.ssh/id_ed25519" >> "${GITHUB_ENV}"
+          echo "SSH_PUBLIC_KEY_PATH=${HOME}/.ssh/id_ed25519.pub" >> "${GITHUB_ENV}"
+
+      - name: Install dependencies
+        run: make venv
+
+      - name: Run acceptance suite
+        run: make test
+
+      # Leak cleanup on cancel/failure is handled by the separate reaper.yml
+      # workflow (workflow_run), which still fires if this runner is terminated.
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: artifacts-${{ inputs.run_id || github.run_id }}
+          path: artifacts/**
+          if-no-files-found: ignore
