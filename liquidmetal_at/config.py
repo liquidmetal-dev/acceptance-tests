@@ -155,6 +155,12 @@ def load(dotenv_path: str | None = None) -> Config:
         if not Path(p).is_file():
             raise ConfigError(f"{name} does not exist: {p}")
 
+    # Number of flintlock host droplets == brigade cluster nodes. Quorum target
+    # (brigade_min_cluster_size) follows this unless overridden explicitly.
+    node_count = int(os.environ.get("NODE_COUNT", "2"))
+    if node_count < 1:
+        raise ConfigError(f"NODE_COUNT={node_count} must be >= 1")
+
     cfg = Config(
         do_token=token,
         do_region=os.environ.get("DO_REGION", "nyc3"),
@@ -178,7 +184,9 @@ def load(dotenv_path: str | None = None) -> Config:
         brigade_grpc_port=int(os.environ.get("BRIGADE_GRPC_PORT", "9091")),
         brigade_status_port=int(os.environ.get("BRIGADE_STATUS_PORT", "9600")),
         brigade_cookie=_env("BRIGADE_COOKIE") or run_id,
-        brigade_min_cluster_size=int(os.environ.get("BRIGADE_MIN_CLUSTER_SIZE", "2")),
+        brigade_min_cluster_size=int(
+            os.environ.get("BRIGADE_MIN_CLUSTER_SIZE", str(node_count))
+        ),
         brigade_ref=os.environ.get("BRIGADE_REF", "main"),
         flintlock_ref=os.environ.get("FLINTLOCK_REF", "main"),
         flintlock_grpc_port=int(os.environ.get("FLINTLOCK_GRPC_PORT", "9090")),
@@ -190,6 +198,7 @@ def load(dotenv_path: str | None = None) -> Config:
         timeout_ssh=int(os.environ.get("TIMEOUT_SSH", "180")),
         keep_infra_on_failure=_bool(os.environ.get("KEEP_INFRA_ON_FAILURE", "false")),
         artifacts_dir=_expand(os.environ.get("ARTIFACTS_DIR", "./artifacts")),
+        droplet_count=node_count,
     )
     _validate_microvm_shape(cfg.microvm_mem_mb, cfg.microvm_vcpu, cfg.microvm_kernel_filename)
     return cfg

@@ -12,6 +12,9 @@ on:
       flintlock_ref:
         description: flintlock git ref to test
         default: main
+      node_count:
+        description: Number of brigade nodes / flintlock host droplets
+        default: "2"
       do_region:
         description: DigitalOcean region (must offer nested-virt droplets + block storage)
         default: nyc3
@@ -48,6 +51,7 @@ jobs:
       DO_API_TOKEN: ${{ secrets.DO_API_TOKEN }}
       BRIGADE_REF: ${{ inputs.brigade_ref }}
       FLINTLOCK_REF: ${{ inputs.flintlock_ref }}
+      NODE_COUNT: ${{ inputs.node_count }}
       DO_REGION: ${{ inputs.do_region }}
       DO_DROPLET_SIZE: ${{ inputs.droplet_size }}
       MICROVM_KERNEL_IMAGE: ${{ inputs.microvm_kernel_image }}

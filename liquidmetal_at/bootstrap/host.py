@@ -1,7 +1,7 @@
 """Drive per-host bootstrap over SSH: flintlock stack, then brigade node.
 
 Runs after droplets are active. Each host is provisioned in parallel; the brigade
-config is peer-aware (both private IPs) so the two nodes form an Erlang mesh.
+config is peer-aware (all peer private IPs) so the nodes form an Erlang mesh.
 """
 from __future__ import annotations
 
@@ -104,7 +104,7 @@ def bootstrap_host(
 
 
 def bootstrap_all(cfg: Config, infra: Infra) -> None:
-    """Bootstrap both hosts in parallel."""
+    """Bootstrap all hosts in parallel."""
     private_ips = [d.private_ip for d in infra.droplets]
     with ThreadPoolExecutor(max_workers=len(infra.droplets)) as pool:
         futures = [
