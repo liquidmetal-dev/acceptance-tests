@@ -2,7 +2,7 @@ name: e2e
 
 # Manually triggered end-to-end acceptance run. Provisions real DigitalOcean
 # infrastructure and costs money, so there is no push/PR trigger — only
-# workflow_dispatch. See CLAUDE.md / README.md for what the suite does.
+# workflow_dispatch. See AGENTS.md / README.md for what the suite does.
 on:
   workflow_dispatch:
     inputs:
@@ -34,6 +34,10 @@ on:
 concurrency:
   group: e2e-acceptance
   cancel-in-progress: false
+
+# Least privilege: checkout only. upload-artifact uses its own backend, not GITHUB_TOKEN scopes.
+permissions:
+  contents: read
 
 jobs:
   e2e:
@@ -80,17 +84,13 @@ jobs:
       - name: Run acceptance suite
         run: make test
 
-      - name: Reap leaked infra (safety-net on cancel/failure)
-        # Serialized runs (concurrency above) mean no concurrent run exists for
-        # the global reaper to clobber. Covers the leak-on-kill gap when a job
-        # timeout / manual Cancel SIGKILLs the process before teardown finishes.
-        if: cancelled() || failure()
-        run: make clean-tags
+      # Leak cleanup on cancel/failure is handled by the separate reaper.yml
+      # workflow (workflow_run), which still fires if this runner is terminated.
 
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: artifacts-${{ github.run_id }}
+          name: artifacts-${{ inputs.run_id || github.run_id }}
           path: artifacts/**
           if-no-files-found: ignore
