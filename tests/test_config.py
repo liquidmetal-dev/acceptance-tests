@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import re
 
-from liquidmetal_at.config import _env, load
+import pytest
+
+from liquidmetal_at.config import ConfigError, _env, load
 
 # python-dotenv yields the whole comment as the value for `RUN_ID=   # optional ...`.
 COMMENT_LEAK = "# optional; auto-generated as at-<8hex> if empty"
@@ -54,3 +56,49 @@ def test_run_id_leak_falls_back_to_generated_and_yields_valid_tag(monkeypatch, t
     assert cfg.brigade_cookie == cfg.run_id
     # The DO VPC name is cfg.tag — must contain only DO-legal characters.
     assert DO_NAME_RE.fullmatch(cfg.tag), cfg.tag
+
+
+def test_provider_defaults_to_firecracker(monkeypatch, tmp_path):
+    empty_env = _prime_required(monkeypatch, tmp_path)
+    monkeypatch.delenv("MICROVM_PROVIDER", raising=False)
+
+    cfg = load(dotenv_path=empty_env)
+
+    assert cfg.microvm_provider == "firecracker"
+    # Without a provider switch, effective kernel == the base firecracker kernel.
+    assert cfg.effective_kernel_image == cfg.microvm_kernel_image
+    assert cfg.effective_kernel_filename == cfg.microvm_kernel_filename
+
+
+def test_provider_cloudhypervisor_uses_ch_kernel_overrides(monkeypatch, tmp_path):
+    empty_env = _prime_required(monkeypatch, tmp_path)
+    monkeypatch.setenv("MICROVM_PROVIDER", "CloudHypervisor")  # case-insensitive
+    monkeypatch.setenv("MICROVM_CH_KERNEL_IMAGE", "ghcr.io/example/ch-kernel:6.1")
+    monkeypatch.setenv("MICROVM_CH_KERNEL_FILENAME", "boot/ch-vmlinux")
+
+    cfg = load(dotenv_path=empty_env)
+
+    assert cfg.microvm_provider == "cloudhypervisor"
+    assert cfg.effective_kernel_image == "ghcr.io/example/ch-kernel:6.1"
+    assert cfg.effective_kernel_filename == "boot/ch-vmlinux"
+
+
+def test_provider_cloudhypervisor_falls_back_to_base_kernel(monkeypatch, tmp_path):
+    empty_env = _prime_required(monkeypatch, tmp_path)
+    monkeypatch.setenv("MICROVM_PROVIDER", "cloudhypervisor")
+    monkeypatch.delenv("MICROVM_CH_KERNEL_IMAGE", raising=False)
+    monkeypatch.delenv("MICROVM_CH_KERNEL_FILENAME", raising=False)
+
+    cfg = load(dotenv_path=empty_env)
+
+    # No CH overrides → reuse the firecracker kernel image/filename.
+    assert cfg.effective_kernel_image == cfg.microvm_kernel_image
+    assert cfg.effective_kernel_filename == cfg.microvm_kernel_filename
+
+
+def test_invalid_provider_raises(monkeypatch, tmp_path):
+    empty_env = _prime_required(monkeypatch, tmp_path)
+    monkeypatch.setenv("MICROVM_PROVIDER", "qemu")
+
+    with pytest.raises(ConfigError):
+        load(dotenv_path=empty_env)

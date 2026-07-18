@@ -7,8 +7,8 @@ Each run:
 
 1. Provisions a VPC, an SSH key, and **2 droplets** (2 flintlock hosts) + a raw block
    volume per host + a firewall — all tagged for cleanup.
-2. Bootstraps each host: containerd + Firecracker + `flintlockd` (via flintlock's
-   `provision.sh`), then builds and runs a **brigade** node. The two brigade nodes form a
+2. Bootstraps each host: containerd + Firecracker + Cloud Hypervisor + `flintlockd` (via
+   flintlock's `provision.sh`), then builds and runs a **brigade** node. The two brigade nodes form a
    distributed-Erlang cluster (`min_cluster_size=2`).
 3. Drives the flintlock gRPC API **through brigade** (north edge `:9091`): create / get /
    list / delete microVMs, verify placement spreads across both hosts, verify quorum
@@ -124,3 +124,12 @@ tweak against a specific flintlock/brigade version, and are isolated for easy ed
 - **`brigade_status.py`** — the `/status` JSON schema (cluster size + placement map). Parsing
   is tolerant; the placement test falls back to per-host flintlock state on disk.
 - **microVM images** — supplied by you via `MICROVM_KERNEL_IMAGE` / `MICROVM_ROOTFS_IMAGE`.
+
+### Hypervisor provider
+
+`MICROVM_PROVIDER` selects the flintlock VM provider for a run — `firecracker` (default) or
+`cloudhypervisor`. Both binaries are installed on every host and `flintlockd` registers both,
+so the per-VM `MicroVMSpec.provider` field chooses the hypervisor; switch providers by
+re-running the suite with a different `MICROVM_PROVIDER`. Cloud Hypervisor often needs a
+PVH-capable kernel — set `MICROVM_CH_KERNEL_IMAGE` / `MICROVM_CH_KERNEL_FILENAME` to override
+the kernel when `MICROVM_PROVIDER=cloudhypervisor` (otherwise the firecracker kernel is reused).

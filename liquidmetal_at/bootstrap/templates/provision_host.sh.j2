@@ -21,7 +21,7 @@ test -f /var/lib/lm-acceptance/base-ready || { echo "base-ready marker missing";
 
 test -e /dev/kvm || { echo "FATAL: /dev/kvm not present - nested virt unavailable"; exit 1; }
 
-echo "== provisioning flintlock stack (containerd, firecracker, thinpool) =="
+echo "== provisioning flintlock stack (containerd, firecracker, cloudhypervisor, thinpool) =="
 cd "$FLINTLOCK_DIR"
 # provision.sh sets up containerd + firecracker + a devicemapper thinpool.
 # --dev builds a loop-device thinpool named by --thinpool; under --dev the
@@ -37,6 +37,10 @@ if [ -x ./hack/scripts/provision.sh ]; then
       ./hack/scripts/provision.sh containerd --thinpool "$THINPOOL" --unattended || true
       ./hack/scripts/provision.sh firecracker || true
     }
+  # Always install Cloud Hypervisor too, so flintlockd can register both providers
+  # and the per-VM MicroVMSpec.provider field selects the hypervisor at create time.
+  # 'all' installs firecracker only, so this runs regardless of the branch above.
+  ./hack/scripts/provision.sh cloudhypervisor || true
 else
   echo "FATAL: provision.sh not found in $FLINTLOCK_DIR/hack/scripts"; exit 1
 fi
@@ -95,6 +99,7 @@ ExecStart=/usr/local/bin/flintlockd run \\
   --containerd-socket=${CONTAINERD_SOCK} \\
   --parent-iface=${PARENT_IFACE} \\
   --bridge-name=${BRIDGE} \\
+  --cloudhypervisor-bin=/usr/local/bin/cloud-hypervisor \\
   --insecure --verbosity 1
 Restart=on-failure
 RestartSec=3

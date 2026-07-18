@@ -27,6 +27,15 @@ on:
       microvm_rootfs_image:
         description: microVM rootfs OCI image
         default: ghcr.io/liquidmetal-dev/capmvm-kubernetes:1.28
+      microvm_provider:
+        description: Hypervisor provider (firecracker | cloudhypervisor)
+        default: firecracker
+      microvm_ch_kernel_image:
+        description: Cloud Hypervisor kernel OCI image (blank = reuse microvm_kernel_image)
+        default: ""
+      microvm_ch_kernel_filename:
+        description: Cloud Hypervisor kernel path in image (blank = reuse microvm_kernel_filename)
+        default: ""
       run_id:
         description: Optional RUN_ID (blank = suite auto-generates at-<hex>)
         default: ""
@@ -56,6 +65,9 @@ jobs:
       DO_DROPLET_SIZE: ${{ inputs.droplet_size }}
       MICROVM_KERNEL_IMAGE: ${{ inputs.microvm_kernel_image }}
       MICROVM_ROOTFS_IMAGE: ${{ inputs.microvm_rootfs_image }}
+      MICROVM_PROVIDER: ${{ inputs.microvm_provider }}
+      MICROVM_CH_KERNEL_IMAGE: ${{ inputs.microvm_ch_kernel_image }}
+      MICROVM_CH_KERNEL_FILENAME: ${{ inputs.microvm_ch_kernel_filename }}
       RUN_ID: ${{ inputs.run_id }}
     steps:
       - name: Preflight — require DO_API_TOKEN

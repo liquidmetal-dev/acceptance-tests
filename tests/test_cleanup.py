@@ -286,3 +286,23 @@ def test_build_spec(tmp_path):
     # TAP guests need a gateway (the host bridge); flintlock validates it as CIDR.
     assert s.interfaces[0].address.gateway == "192.168.100.1/24"
     assert "user-data" in s.metadata and "meta-data" in s.metadata
+    # Provider defaults to firecracker.
+    assert s.provider == "firecracker"
+
+
+def test_build_spec_cloudhypervisor(tmp_path):
+    from dataclasses import replace
+
+    from liquidmetal_at.flintlock import spec
+
+    cfg = replace(
+        _dummy_config(tmp_path),
+        microvm_provider="cloudhypervisor",
+        microvm_ch_kernel_image="ghcr.io/example/ch-kernel:6.1",
+        microvm_ch_kernel_filename="boot/compressed-vmlinux.bin",
+    )
+    s = spec.build_create_request(cfg, 0).microvm
+    # provider flows into the spec; CH kernel overrides win when set.
+    assert s.provider == "cloudhypervisor"
+    assert s.kernel.image == "ghcr.io/example/ch-kernel:6.1"
+    assert s.kernel.filename == "boot/compressed-vmlinux.bin"

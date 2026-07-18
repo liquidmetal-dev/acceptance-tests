@@ -36,9 +36,9 @@ def build_spec(cfg: Config, index: int) -> microvm_pb2.MicroVMSpec:
     vm_id = f"{cfg.run_id}-vm{index}"
     static_ip = cfg.microvm_static_ip(index)
 
-    kernel = microvm_pb2.Kernel(image=cfg.microvm_kernel_image, add_network_config=True)
-    if cfg.microvm_kernel_filename:
-        kernel.filename = cfg.microvm_kernel_filename
+    kernel = microvm_pb2.Kernel(image=cfg.effective_kernel_image, add_network_config=True)
+    if cfg.effective_kernel_filename:
+        kernel.filename = cfg.effective_kernel_filename
 
     root_volume = microvm_pb2.Volume(
         id="root",
@@ -66,6 +66,7 @@ def build_spec(cfg: Config, index: int) -> microvm_pb2.MicroVMSpec:
         root_volume=root_volume,
         interfaces=[iface],
         metadata={"user-data": _b64(user_data), "meta-data": _b64(meta_data)},
+        provider=cfg.microvm_provider,
     )
 
 
