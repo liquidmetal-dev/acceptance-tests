@@ -76,9 +76,14 @@ class SSH:
     def run(self, cmd: str, *, check: bool = True, timeout: float = 600) -> tuple[int, str, str]:
         log.info("[%s] $ %s", self.host, cmd if len(cmd) < 120 else cmd[:117] + "...")
         _, stdout, stderr = self.client.exec_command(cmd, timeout=timeout, get_pty=False)
-        rc = stdout.channel.recv_exit_status()
+        # Drain both streams BEFORE reading the exit status. recv_exit_status() blocks until
+        # the remote command exits, but a command that writes more than the channel window
+        # (~a few MB — e.g. cat-ing a large cloudhypervisor.stdout) blocks on write until we
+        # read, so calling recv_exit_status() first deadlocks. read() drains to EOF, then the
+        # exit status is already available.
         out = stdout.read().decode(errors="replace")
         err = stderr.read().decode(errors="replace")
+        rc = stdout.channel.recv_exit_status()
         if check and rc != 0:
             raise CommandError(cmd, rc, out, err)
         return rc, out, err

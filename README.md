@@ -130,6 +130,45 @@ tweak against a specific flintlock/brigade version, and are isolated for easy ed
 `MICROVM_PROVIDER` selects the flintlock VM provider for a run — `firecracker` (default) or
 `cloudhypervisor`. Both binaries are installed on every host and `flintlockd` registers both,
 so the per-VM `MicroVMSpec.provider` field chooses the hypervisor; switch providers by
-re-running the suite with a different `MICROVM_PROVIDER`. Cloud Hypervisor often needs a
+re-running the suite with a different `MICROVM_PROVIDER`. Cloud Hypervisor needs a
 PVH-capable kernel — set `MICROVM_CH_KERNEL_IMAGE` / `MICROVM_CH_KERNEL_FILENAME` to override
 the kernel when `MICROVM_PROVIDER=cloudhypervisor` (otherwise the firecracker kernel is reused).
+
+Getting the Cloud Hypervisor path to boot + network a guest required three things the
+Firecracker path doesn't (all handled in code / `.env`, but worth knowing):
+
+1. **CH binary name** — `provision.sh` installs the release asset as `cloud-hypervisor-static`;
+   `provision_host.sh.j2` symlinks it to `/usr/local/bin/cloud-hypervisor` (what
+   `--cloudhypervisor-bin` expects). Without it, `flintlockd` registers the provider but every
+   create dies at exec time (`starting cloud hypervisor process: %!w(<nil>)`).
+2. **Kernel path** — the `cloudhypervisor-kernel-*` images ship the kernel at `vmlinux.bin`
+   (root of the image, a PVH ELF), not `boot/vmlinux` — set `MICROVM_CH_KERNEL_FILENAME=vmlinux.bin`.
+3. **Guest cloud-init + NIC** (`flintlock/spec.py`) — CH delivers cloud-init only via the FAT32
+   `cidata` NoCloud disk (no MMDS), so we set `ds=nocloud` on the CH kernel cmdline; and CH is
+   PCI-based so the guest names its NIC `ens4` (not `eth1` like Firecracker's `pci=off` MMIO
+   guest). flintlock's netplan matches the interface by *name* unless a MAC is set, so we set a
+   per-VM `guest_mac`, which flips the netplan to `match: {macaddress}` — name-agnostic, binds
+   on both providers.
+
+### Known upstream issue — Cloud Hypervisor CREATED-timeout flake (flintlock #999)
+
+With `MICROVM_PROVIDER=cloudhypervisor`, `test_placement` / `test_ssh_reachability` fail
+intermittently (~1 run in 3) with `WaitTimeout: microvm ... -> CREATED`, even though the guest
+that *does* come up boots and networks correctly. This is an **unfixed upstream flintlock bug**
+([liquidmetal-dev/flintlock#999](https://github.com/liquidmetal-dev/flintlock/issues/999)), not
+a suite bug:
+
+- flintlock's CH `provider.State()` maps Cloud Hypervisor's own `"Created"` state (the window
+  after the API socket is up but before the guest finishes booting) to
+  `MicroVMStatePending`. So the reconcile loop's `createStep.ShouldDo()` stays true and it
+  spawns *another* cloud-hypervisor on the same `--api-socket` → `Address already in use` /
+  `Resource busy` (hundreds of these per host in `cloudhypervisor.stderr`).
+- `create.go`'s `ensureState()` then removes the socket file **even when a live process holds
+  it**, orphaning the running CH so its state can never be read again → the VM lands in
+  `FailedState` and never reaches `CREATED` → our `wait_state(CREATED)` times out.
+
+Minimal upstream fix (see `docs/flintlock-999-ch-reconcile.md`): treat CH `"Created"` as
+`Running` in `State()`, and don't delete the socket of a live PID in `ensureState()`. Until
+that lands, a green CH run may need a re-run; the Firecracker suite is unaffected. Per-VM guest
+consoles are captured to `artifacts/<run_id>/host*-vmconsole-*.log` (and the teardown
+`host*-vm-hypervisor.log`) so the flake is diagnosable from artifacts.

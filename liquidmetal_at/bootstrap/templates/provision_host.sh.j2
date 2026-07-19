@@ -23,6 +23,12 @@ test -e /dev/kvm || { echo "FATAL: /dev/kvm not present - nested virt unavailabl
 
 echo "== provisioning flintlock stack (containerd, firecracker, cloudhypervisor, thinpool) =="
 cd "$FLINTLOCK_DIR"
+{% if flintlock_version|default('') %}
+# Pin the flintlockd release provision.sh installs (it reads ${FLINTLOCK:-latest}). Keeps the
+# version under test deterministic instead of tracking whatever the latest GitHub release is.
+export FLINTLOCK={{ flintlock_version }}
+echo "== pinning flintlockd release to $FLINTLOCK =="
+{% endif %}
 # provision.sh sets up containerd + firecracker + a devicemapper thinpool.
 # --dev builds a loop-device thinpool named by --thinpool; under --dev the
 # --disk flag is ignored, so we omit it (raw block volume is not used here).
@@ -37,13 +43,30 @@ if [ -x ./hack/scripts/provision.sh ]; then
       ./hack/scripts/provision.sh containerd --thinpool "$THINPOOL" --unattended || true
       ./hack/scripts/provision.sh firecracker || true
     }
-  # Always install Cloud Hypervisor too, so flintlockd can register both providers
-  # and the per-VM MicroVMSpec.provider field selects the hypervisor at create time.
-  # 'all' installs firecracker only, so this runs regardless of the branch above.
+  # provision.sh 'all' already runs the cloudhypervisor step, but re-run it explicitly so
+  # both providers are installed even on flintlock versions whose 'all' omits it. Cheap and
+  # idempotent (re-downloads the release binary).
   ./hack/scripts/provision.sh cloudhypervisor || true
 else
   echo "FATAL: provision.sh not found in $FLINTLOCK_DIR/hack/scripts"; exit 1
 fi
+
+# provision.sh installs the Cloud Hypervisor release asset under its upstream name
+# 'cloud-hypervisor-static' (the static musl build). flintlockd's --cloudhypervisor-bin below
+# points at the canonical '/usr/local/bin/cloud-hypervisor', so expose a stable name via
+# symlink regardless of which asset name was installed. Fail fast if the binary is genuinely
+# absent — otherwise flintlockd registers the provider but every VM create dies at exec time
+# with "starting cloud hypervisor process: %!w(<nil>)".
+if [ ! -x /usr/local/bin/cloud-hypervisor ]; then
+  for cand in cloud-hypervisor-static cloud-hypervisor; do
+    if [ -x "/usr/local/bin/$cand" ]; then
+      ln -sf "/usr/local/bin/$cand" /usr/local/bin/cloud-hypervisor
+      break
+    fi
+  done
+fi
+command -v cloud-hypervisor >/dev/null \
+  || { echo "FATAL: cloud-hypervisor not installed (checked cloud-hypervisor-static)"; exit 1; }
 
 echo "== installing flintlockd binary =="
 if [ ! -x /usr/local/bin/flintlockd ]; then
