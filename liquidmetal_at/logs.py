@@ -90,14 +90,46 @@ def _diag_commands(cfg: Config, peers: list[Droplet]) -> list[tuple[str, str]]:
         ("bridge", "ip link show flintlock0; bridge link show 2>/dev/null"),
         ("nat", "iptables -t nat -S; sysctl net.ipv4.ip_forward"),
         # microVM boot: why a guest never reaches CREATED. KVM presence, the flintlock
-        # per-VM state tree, and the running firecracker processes + their cmdlines.
+        # per-VM state tree, and the running hypervisor processes + their cmdlines.
         ("kvm", "ls -l /dev/kvm 2>&1; kvm-ok 2>&1 | tail -3"),
         ("flintlock-tree", "find /var/lib/flintlock -maxdepth 6 -type f 2>/dev/null"),
         (
-            "firecracker-ps",
-            "ps -eo pid,etimes,args | grep -i [f]irecracker; "
-            "for p in $(pgrep -x firecracker); do echo \"cmdline $p:\"; "
-            "tr '\\0' ' ' </proc/$p/cmdline; echo; done",
+            "hypervisor-ps",
+            "ps -eo pid,etimes,args | grep -iE '[f]irecracker|[c]loud-hypervisor'; "
+            "for p in $(pgrep -x firecracker; pgrep -x cloud-hypervisor); do "
+            "echo \"cmdline $p:\"; tr '\\0' ' ' </proc/$p/cmdline; echo; done",
+        ),
+        # Provider readiness for the cloudhypervisor run: is the binary installed, which
+        # provider(s) did flintlockd register, and does its unit carry --cloudhypervisor-bin?
+        # A missing binary / unregistered provider is the first thing to rule out when a CH
+        # microVM never reaches CREATED.
+        (
+            "hypervisor-bins",
+            "for b in firecracker cloud-hypervisor cloud-hypervisor-static; do "
+            "echo -n \"$b: \"; "
+            "(command -v $b && $b --version 2>&1 | head -1) || echo MISSING; done; "
+            "ls -l /usr/local/bin/cloud-hypervisor* 2>&1",
+        ),
+        (
+            "flintlockd-providers",
+            "cat /etc/systemd/system/flintlockd.service 2>/dev/null | grep -iE "
+            "'firecracker|cloudhypervisor|provider' || true; echo '--- journal ---'; "
+            "journalctl -u flintlockd -b --no-pager | grep -iE "
+            "'provider|cloudhypervisor|cloud-hypervisor|firecracker|registered' | tail -40",
+        ),
+        # Cloud Hypervisor #999 (socket churn / orphaning) evidence. If a CH microVM stalls
+        # short of CREATED, the smoking gun is a per-VM api-socket bound by one live CH while a
+        # second Create races on it. Map every cloudhypervisor.sock to its owning PID and count
+        # the "already in use" signature so a recurrence is root-caused straight from artifacts
+        # rather than needing a re-run. See docs/flintlock-999-ch-reconcile.md.
+        (
+            "ch-sockets-999",
+            "for s in $(find /var/lib/flintlock -name 'cloudhypervisor.sock' 2>/dev/null); do "
+            "echo -n \"$s -> \"; fuser \"$s\" 2>/dev/null || echo '(no owner)'; done; "
+            "echo '--- api-socket-in-use count per vm ---'; "
+            "for f in $(find /var/lib/flintlock -name 'cloudhypervisor.stderr' 2>/dev/null); do "
+            "echo -n \"$f: \"; grep -c 'already in use by another running instance' \"$f\" "
+            "2>/dev/null || echo 0; done",
         ),
         ("cloud-init", "tail -200 /var/log/cloud-init-output.log"),
     ]
@@ -122,6 +154,36 @@ def _diag_commands(cfg: Config, peers: list[Droplet]) -> list[tuple[str, str]]:
     return cmds
 
 
+def collect_vm_consoles(cfg: Config, droplets, tag: str) -> None:
+    """Snapshot every live per-VM hypervisor console/log across all hosts, right now.
+
+    The session-scoped log collector (`collect`) only runs at teardown — by then a test's
+    `finally` has already deleted its microVMs, so the guest serial console (cloudhypervisor's
+    hvc0 → cloudhypervisor.stdout, or firecracker.log) is gone. Call this from inside a test,
+    before it deletes its VMs, to capture why a guest did/didn't network-boot. Best-effort:
+    never raises, so it can sit in a `finally`.
+    """
+    out = Path(cfg.artifacts_dir) / cfg.run_id
+    out.mkdir(parents=True, exist_ok=True)
+    for i, d in enumerate(droplets):
+        try:
+            ssh = SSH(host=d.public_ip, user="root", key_path=cfg.ssh_private_key_path)
+            ssh.connect(timeout=30)
+            try:
+                _, dump, _ = ssh.run(
+                    "for f in $(find /var/lib/flintlock \\( -name '*.log' -o -name '*.stderr' "
+                    "-o -name '*.stdout' \\) 2>/dev/null); do "
+                    'echo "== $f =="; head -c 262144 "$f"; echo; done',
+                    check=False,
+                )
+            finally:
+                ssh.close()
+            (out / f"host{i}-vmconsole-{tag}.log").write_text(dump)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not snapshot vm consoles from host%d: %s", i, exc)
+    log.info("snapshotted vm consoles (%s) into %s", tag, out)
+
+
 def collect(cfg: Config, infra: Infra) -> None:
     out = Path(cfg.artifacts_dir) / cfg.run_id
     out.mkdir(parents=True, exist_ok=True)
@@ -142,14 +204,22 @@ def collect(cfg: Config, infra: Infra) -> None:
                 blocks.append(f"== {name} ==\n$ {cmd}\n{stdout}{stderr}")
             (out / f"host{i}-diag.txt").write_text("\n\n".join(blocks) + "\n")
 
-            # Per-VM firecracker logs (debug-level guest boot output) — the evidence for
+            # Per-VM hypervisor logs (debug-level guest boot output) — the evidence for
             # why a microvm won't reach CREATED. Written under /var/lib/flintlock/vm/**.
+            # Cloud Hypervisor writes cloud-hypervisor.log; Firecracker writes
+            # firecracker.log — grab every per-VM *.log so either provider is covered.
+            # cloudhypervisor writes cloudhypervisor.{log,stdout,stderr}; the stderr/stdout carry
+            # the guest console + boot failures, so grab logs AND std streams for either provider.
+            # Cap each file (head -c) — a booting guest's serial console can grow to many MB and
+            # we only need the head to see why it did/didn't come up; unbounded cat risks a slow
+            # multi-MB transfer stalling teardown.
             _, fclogs, _ = ssh.run(
-                "for f in $(find /var/lib/flintlock -name firecracker.log 2>/dev/null); do "
-                'echo "== $f =="; cat "$f"; echo; done',
+                "for f in $(find /var/lib/flintlock \\( -name '*.log' -o -name '*.stderr' "
+                "-o -name '*.stdout' \\) 2>/dev/null); do "
+                'echo "== $f =="; head -c 262144 "$f"; echo; done',
                 check=False,
             )
-            (out / f"host{i}-firecracker.log").write_text(fclogs)
+            (out / f"host{i}-vm-hypervisor.log").write_text(fclogs)
             ssh.close()
         except Exception as exc:  # noqa: BLE001
             log.warning("could not collect logs from host%d: %s", i, exc)

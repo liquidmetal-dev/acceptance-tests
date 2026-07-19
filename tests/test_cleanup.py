@@ -285,4 +285,34 @@ def test_build_spec(tmp_path):
     assert s.interfaces[0].address.address == "192.168.100.12/24"
     # TAP guests need a gateway (the host bridge); flintlock validates it as CIDR.
     assert s.interfaces[0].address.gateway == "192.168.100.1/24"
+    # A per-VM guest MAC makes flintlock's netplan match by MAC (not by name), so the guest
+    # NIC binds regardless of eth1/ens4 naming. Deterministic + unique per index.
+    assert s.interfaces[0].guest_mac == "aa:ff:00:00:00:02"
     assert "user-data" in s.metadata and "meta-data" in s.metadata
+    # Provider defaults to firecracker.
+    assert s.provider == "firecracker"
+    # Firecracker carries its own ds= hint via MMDS/cmdline in flintlock; we must not inject one.
+    assert "ds" not in dict(s.kernel.cmdline)
+
+
+def test_build_spec_cloudhypervisor(tmp_path):
+    from dataclasses import replace
+
+    from liquidmetal_at.flintlock import spec
+
+    cfg = replace(
+        _dummy_config(tmp_path),
+        microvm_provider="cloudhypervisor",
+        microvm_ch_kernel_image="ghcr.io/example/ch-kernel:6.1",
+        microvm_ch_kernel_filename="boot/compressed-vmlinux.bin",
+    )
+    s = spec.build_create_request(cfg, 0).microvm
+    # provider flows into the spec; CH kernel overrides win when set.
+    assert s.provider == "cloudhypervisor"
+    assert s.kernel.image == "ghcr.io/example/ch-kernel:6.1"
+    assert s.kernel.filename == "boot/compressed-vmlinux.bin"
+    # CH has no MMDS/cmdline datasource hint, so we force NoCloud to make the guest's
+    # cloud-init read the cidata disk (network-config) — without it the NIC never comes up.
+    assert dict(s.kernel.cmdline).get("ds") == "nocloud"
+    # guest_mac drives netplan match-by-MAC so CH's ens4-named NIC still binds; index 0 here.
+    assert s.interfaces[0].guest_mac == "aa:ff:00:00:00:00"

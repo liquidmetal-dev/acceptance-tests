@@ -19,6 +19,7 @@ import time
 
 import pytest
 
+from liquidmetal_at import logs
 from liquidmetal_at.flintlock import spec
 from liquidmetal_at.flintlock.client import State
 from liquidmetal_at.remote.bastion import ssh_to_microvm
@@ -89,5 +90,12 @@ def test_microvms_reachable_by_ssh(config, fl_client, cluster, vm_index):
                 guest.close()
                 bastion.close()
     finally:
+        # Snapshot the guest serial console (CH hvc0 → cloudhypervisor.stdout, or firecracker.log)
+        # BEFORE deleting the VMs — otherwise the evidence for why a guest didn't network-boot is
+        # gone by the time the session-scoped log collector runs at teardown. Best-effort.
+        try:
+            logs.collect_vm_consoles(config, cluster.droplets, tag="ssh-reachability")
+        except Exception:  # noqa: BLE001
+            pass
         for _, uid in vms:
             fl_client.delete(uid)

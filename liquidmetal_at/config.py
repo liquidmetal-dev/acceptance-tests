@@ -88,7 +88,28 @@ class Config:
 
     droplet_count: int = 2
 
+    # hypervisor provider (firecracker | cloudhypervisor). Cloud Hypervisor often
+    # needs a PVH-capable kernel, so allow per-provider kernel overrides that fall
+    # back to the firecracker kernel image/filename when unset.
+    microvm_provider: str = "firecracker"
+    microvm_ch_kernel_image: str = ""
+    microvm_ch_kernel_filename: str = ""
+
     tag_prefix: str = field(default="lm-acceptance", init=False)
+
+    @property
+    def effective_kernel_image(self) -> str:
+        """Kernel OCI image for the selected provider — CH override when set, else base."""
+        if self.microvm_provider == "cloudhypervisor" and self.microvm_ch_kernel_image:
+            return self.microvm_ch_kernel_image
+        return self.microvm_kernel_image
+
+    @property
+    def effective_kernel_filename(self) -> str:
+        """Kernel path inside the image for the selected provider (CH override when set)."""
+        if self.microvm_provider == "cloudhypervisor" and self.microvm_ch_kernel_filename:
+            return self.microvm_ch_kernel_filename
+        return self.microvm_kernel_filename
 
     @property
     def tag(self) -> str:
@@ -129,6 +150,9 @@ def _validate_microvm_shape(mem_mb: int, vcpu: int, kernel_filename: str) -> Non
         raise ConfigError("MICROVM_KERNEL_FILENAME is required by flintlock (e.g. boot/vmlinux)")
 
 
+_PROVIDERS = ("firecracker", "cloudhypervisor")
+
+
 def load(dotenv_path: str | None = None) -> Config:
     """Load and validate configuration from the environment / .env file."""
     load_dotenv(dotenv_path, override=False)
@@ -160,6 +184,12 @@ def load(dotenv_path: str | None = None) -> Config:
     node_count = int(os.environ.get("NODE_COUNT", "2"))
     if node_count < 1:
         raise ConfigError(f"NODE_COUNT={node_count} must be >= 1")
+
+    provider = (_env("MICROVM_PROVIDER") or "firecracker").lower()
+    if provider not in _PROVIDERS:
+        raise ConfigError(
+            f"MICROVM_PROVIDER={provider!r} invalid; must be one of {_PROVIDERS}"
+        )
 
     cfg = Config(
         do_token=token,
@@ -199,6 +229,9 @@ def load(dotenv_path: str | None = None) -> Config:
         keep_infra_on_failure=_bool(os.environ.get("KEEP_INFRA_ON_FAILURE", "false")),
         artifacts_dir=_expand(os.environ.get("ARTIFACTS_DIR", "./artifacts")),
         droplet_count=node_count,
+        microvm_provider=provider,
+        microvm_ch_kernel_image=_env("MICROVM_CH_KERNEL_IMAGE"),
+        microvm_ch_kernel_filename=_env("MICROVM_CH_KERNEL_FILENAME"),
     )
     _validate_microvm_shape(cfg.microvm_mem_mb, cfg.microvm_vcpu, cfg.microvm_kernel_filename)
     return cfg

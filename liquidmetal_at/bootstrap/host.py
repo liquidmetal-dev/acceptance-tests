@@ -6,6 +6,7 @@ config is peer-aware (all peer private IPs) so the nodes form an Erlang mesh.
 from __future__ import annotations
 
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor
 
 from ..config import Config
@@ -42,6 +43,10 @@ def _capacity(cfg: Config) -> tuple[int, int]:
 
 def _provision_flintlock(cfg: Config, ssh: SSH) -> None:
     ssh.run("cloud-init status --wait || true", timeout=1200)
+    # provision.sh installs the flintlockd release matching FLINTLOCK_VERSION, defaulting to
+    # 'latest'. When FLINTLOCK_REF is a semver tag (e.g. v0.10.0) pin the binary to that exact
+    # release so the version under test is deterministic, not whatever 'latest' happens to be.
+    flintlock_version = cfg.flintlock_ref if re.match(r"^v\d", cfg.flintlock_ref) else ""
     script = render(
         "provision_host.sh.j2",
         thinpool=THINPOOL_NAME,
@@ -51,6 +56,7 @@ def _provision_flintlock(cfg: Config, ssh: SSH) -> None:
         bridge_addr=cfg.microvm_gateway_cidr,
         guest_subnet=cfg.microvm_subnet_cidr,
         flintlock_grpc_port=cfg.flintlock_grpc_port,
+        flintlock_version=flintlock_version,
     )
     ssh.put(script, "/tmp/provision_host.sh")
     ssh.sudo("bash /tmp/provision_host.sh", timeout=1800)
