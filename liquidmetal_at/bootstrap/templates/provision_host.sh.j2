@@ -80,6 +80,23 @@ if [ ! -x /usr/local/bin/flintlockd ]; then
 fi
 command -v flintlockd >/dev/null || { echo "FATAL: flintlockd not installed"; exit 1; }
 
+echo "== installing vsock-connect host client =="
+# vsock-connect is the host-side helper the guest-agent test drives: it opens the per-VM vsock
+# UDS (reported in MicroVMStatus.vsock_path) and runs commands in the guest over vsock. Only the
+# guest-agent test needs it, so a download hiccup warns rather than fails the whole bootstrap.
+if [ ! -x /usr/local/bin/vsock-connect ]; then
+  GA_VER="{{ guest_agent_version|default('0.1.0') }}"
+  GA_URL="https://github.com/liquidmetal-dev/guest-agent/releases/download/v${GA_VER}/vsock-connect_${GA_VER}_linux_amd64.tar.gz"
+  GA_TMP=$(mktemp -d)
+  if curl -fsSL "$GA_URL" -o "$GA_TMP/vc.tgz"; then
+    tar -xzf "$GA_TMP/vc.tgz" -C "$GA_TMP"
+    GA_BIN=$(find "$GA_TMP" -type f -name vsock-connect | head -1)
+    [ -n "$GA_BIN" ] && install -m0755 "$GA_BIN" /usr/local/bin/vsock-connect
+  fi
+  rm -rf "$GA_TMP"
+fi
+command -v vsock-connect >/dev/null || echo "WARN: vsock-connect not installed"
+
 echo "== detecting containerd socket =="
 CONTAINERD_SOCK=/run/containerd-dev/containerd.sock
 [ -S "$CONTAINERD_SOCK" ] || CONTAINERD_SOCK=/run/containerd/containerd.sock

@@ -46,6 +46,7 @@ def _dummy_config(tmp_path) -> Config:
         brigade_ref="main",
         flintlock_ref="main",
         flintlock_grpc_port=9090,
+        guest_agent_version="0.1.0",
         timeout_provision=300,
         timeout_bootstrap=1200,
         timeout_cluster=180,
@@ -316,3 +317,48 @@ def test_build_spec_cloudhypervisor(tmp_path):
     assert dict(s.kernel.cmdline).get("ds") == "nocloud"
     # guest_mac drives netplan match-by-MAC so CH's ens4-named NIC still binds; index 0 here.
     assert s.interfaces[0].guest_mac == "aa:ff:00:00:00:00"
+
+
+def test_build_spec_default_no_guest_agent(tmp_path):
+    from liquidmetal_at.flintlock import spec
+
+    s = spec.build_create_request(_dummy_config(tmp_path), 1).microvm
+    # Default path must not opt in to the vsock guest-agent, and leaves the NIC DNS-free.
+    assert s.allow_guest_agent is False
+    assert list(s.interfaces[0].address.nameservers) == []
+
+
+def test_build_spec_guest_agent(tmp_path):
+    import base64
+
+    from liquidmetal_at.flintlock import spec
+
+    s = spec.build_create_request(_dummy_config(tmp_path), 1, guest_agent=True).microvm
+    # allow_guest_agent tells flintlock to attach the vsock device + report vsock_path.
+    assert s.allow_guest_agent is True
+    # The guest needs a resolver to reach the apt repo; set on the NIC (netplan).
+    assert list(s.interfaces[0].address.nameservers) == ["1.1.1.1", "8.8.8.8"]
+    # cloud-init user-data installs + enables guest-agent from the LiquidMetal apt repo.
+    user_data = base64.b64decode(s.metadata["user-data"]).decode()
+    assert "liquidmetal-dev.github.io/apt-repo" in user_data
+    assert "apt-get install -y guest-agent" in user_data
+    assert "systemctl" in user_data and "guest-agent.service" in user_data
+
+
+def test_provision_host_installs_vsock_connect(tmp_path):
+    # The host needs the vsock-connect client to drive the guest-agent test.
+    host_sh = render(
+        "provision_host.sh.j2",
+        thinpool="tp",
+        disk="/dev/sda",
+        parent_iface="eth1",
+        bridge_name="flintlock0",
+        bridge_addr="192.168.100.1/24",
+        guest_subnet="192.168.100.0/24",
+        flintlock_grpc_port=9090,
+        guest_agent_version="0.1.0",
+    )
+    # Version is rendered into a shell var; the tarball name interpolates it at runtime.
+    assert 'GA_VER="0.1.0"' in host_sh
+    assert "vsock-connect_${GA_VER}_linux_amd64.tar.gz" in host_sh
+    assert "install -m0755 \"$GA_BIN\" /usr/local/bin/vsock-connect" in host_sh

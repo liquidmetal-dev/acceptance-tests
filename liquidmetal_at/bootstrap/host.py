@@ -57,6 +57,7 @@ def _provision_flintlock(cfg: Config, ssh: SSH) -> None:
         guest_subnet=cfg.microvm_subnet_cidr,
         flintlock_grpc_port=cfg.flintlock_grpc_port,
         flintlock_version=flintlock_version,
+        guest_agent_version=cfg.guest_agent_version,
     )
     ssh.put(script, "/tmp/provision_host.sh")
     ssh.sudo("bash /tmp/provision_host.sh", timeout=1800)
