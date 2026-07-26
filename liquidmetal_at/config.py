@@ -73,6 +73,7 @@ class Config:
     brigade_ref: str
     flintlock_ref: str
     flintlock_grpc_port: int
+    guest_agent_version: str
 
     # timeouts (seconds)
     timeout_provision: int
@@ -220,6 +221,9 @@ def load(dotenv_path: str | None = None) -> Config:
         brigade_ref=os.environ.get("BRIGADE_REF", "main"),
         flintlock_ref=os.environ.get("FLINTLOCK_REF", "main"),
         flintlock_grpc_port=int(os.environ.get("FLINTLOCK_GRPC_PORT", "9090")),
+        # guest-agent + its host-side vsock-connect client are version-locked (same framed
+        # protocol); pin both to one release for the guest-agent-over-vsock test.
+        guest_agent_version=_env("GUEST_AGENT_VERSION") or "0.1.0",
         timeout_provision=int(os.environ.get("TIMEOUT_PROVISION", "300")),
         timeout_bootstrap=int(os.environ.get("TIMEOUT_BOOTSTRAP", "1200")),
         timeout_cluster=int(os.environ.get("TIMEOUT_CLUSTER", "180")),
