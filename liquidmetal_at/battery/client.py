@@ -114,11 +114,30 @@ class PoolManagerClient:
 
     # --- Events ---
 
-    def subscribe(self, *, timeout: float | None = None) -> Iterator[events_pb2.Event]:
-        """Stream events. The caller is responsible for consuming it from a background
-        thread if it needs to keep driving other calls concurrently - a streaming RPC
-        blocks the calling thread between messages."""
-        return self._events.Subscribe(events_pb2.SubscribeRequest(), timeout=timeout)
+    def subscribe(
+        self,
+        pool_name: str | None = None,
+        pool_namespace: str | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> Iterator[events_pb2.Event]:
+        """Stream events, optionally filtered server-side to one pool.
+
+        Unfiltered (the default), poolmgrd replays its *entire* persisted event outbox to
+        every new subscriber before live events resume - on a session-scoped daemon shared
+        across tests, that includes every earlier test's events. Pass ``pool_name``/
+        ``pool_namespace`` whenever a test only cares about its own pool's events, or a
+        prior test's replayed events can make an assertion pass on stale data.
+
+        The caller is responsible for consuming the stream from a background thread if it
+        needs to keep driving other calls concurrently - a streaming RPC blocks the calling
+        thread between messages.
+        """
+        req = events_pb2.SubscribeRequest()
+        if pool_name is not None:
+            req.pool.name = pool_name
+            req.pool.namespace = pool_namespace or ""
+        return self._events.Subscribe(req, timeout=timeout)
 
     # --- waiters ---
 

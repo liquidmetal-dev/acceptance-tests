@@ -21,13 +21,15 @@ log = logging.getLogger("test_events")
 EventType = types_pb2.EventType
 
 
-def _drain_events_in_background(client) -> tuple[queue.Queue, threading.Event]:
+def _drain_events_in_background(
+    client, pool_name: str, pool_namespace: str
+) -> tuple[queue.Queue, threading.Event]:
     events: queue.Queue = queue.Queue()
     stop = threading.Event()
 
     def _run():
         try:
-            for event in client.subscribe():
+            for event in client.subscribe(pool_name, pool_namespace):
                 events.put(event)
                 if stop.is_set():
                     break
@@ -58,7 +60,9 @@ def _subsequence_present(haystack: list[int], needle: list[int]) -> bool:
 def test_events_subsequence(config, battery_client, hosts, vm_index):
     pool_name = f"{config.run_id}-pool-events"
     flintlock_hosts = [f"host-{i}" for i in range(len(hosts.droplets))]
-    events, stop = _drain_events_in_background(battery_client)
+    events, stop = _drain_events_in_background(
+        battery_client, pool_name, config.microvm_namespace
+    )
 
     try:
         spec = build_pool_spec(

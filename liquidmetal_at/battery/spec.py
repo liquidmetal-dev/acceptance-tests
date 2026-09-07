@@ -2,10 +2,17 @@
 
 Reuses :func:`liquidmetal_at.flintlock.spec.build_spec` for ``microvm_template`` - the
 same real, provisionable flintlock spec (kernel/rootfs/interface/static IP) already used
-for brigade's VMs. flintlock validates create requests identically regardless of caller,
-and poolmgrd forces ``allow_guest_agent`` server-side, so the plain (non guest-agent)
-template is enough here - hooks (create/pre_lease commands) are deliberately left empty so
-this suite doesn't need flintlockd's ``--enable-exec-api`` flag.
+for brigade's VMs, built with ``guest_agent=True``.
+
+CAUTION - verified directly from upstream (``internal/reconciler/provision.go``): ``Provision``
+unconditionally calls ``flintlockclient.WaitReady`` (a no-op ``true`` exec via flintlockd's
+native ``MicroVMExec`` service) before running any ``create_commands`` - it does this even when
+the pool's hook lists are empty, not only when they're non-empty. So every VM needs the
+in-guest guest-agent actually installed and running (``build_spec(..., guest_agent=True)``,
+not just ``allow_guest_agent`` on the wire - that only attaches the vsock device, it doesn't
+install the agent software) and flintlockd needs ``--enable-exec-api``
+(``bootstrap/host.py::bootstrap_host_battery`` passes ``enable_exec_api=True``). Without both,
+every VM in every pool times out in ``CREATE_HOOK_RUNNING`` and never reaches ``AVAILABLE``.
 
 CAUTION - verified directly from upstream (``internal/reconciler/provision.go``): the
 reconciler clones ``pool.microvm_template`` **verbatim** for every VM in the pool (only
@@ -45,7 +52,7 @@ def build_pool_spec(
     spec = types_pb2.PoolSpec(
         name=name,
         namespace=cfg.microvm_namespace,
-        microvm_template=build_spec(cfg, index),
+        microvm_template=build_spec(cfg, index, guest_agent=True),
         size=size,
         flintlock_hosts=flintlock_hosts,
         replenishment_strategy=strategy,

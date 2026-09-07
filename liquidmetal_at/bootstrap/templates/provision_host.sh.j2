@@ -140,7 +140,8 @@ ExecStart=/usr/local/bin/flintlockd run \\
   --parent-iface=${PARENT_IFACE} \\
   --bridge-name=${BRIDGE} \\
   --cloudhypervisor-bin=/usr/local/bin/cloud-hypervisor \\
-  --insecure --verbosity 1
+{% if enable_exec_api|default(false) %}  --enable-exec-api \\
+{% endif %}  --insecure --verbosity 1
 Restart=on-failure
 RestartSec=3
 

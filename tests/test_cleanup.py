@@ -200,6 +200,32 @@ def test_renders_are_valid():
     assert "--bridge-name=${BRIDGE}" in host_sh
 
 
+def test_firewall_opens_battery_ports_to_the_runner(tmp_path):
+    """battery_client dials the droplet's public IP, so the runner-facing firewall must
+    open battery_api_port/battery_metrics_port the same way it already does for brigade's
+    ports - not just the peer-only mesh rules."""
+    cfg = _dummy_config(tmp_path)
+
+    class _FirewallsNS:
+        def create(self, body):
+            self.body = body
+            return {"firewall": {"id": "fw1"}}
+
+    class _StubClient:
+        def __init__(self):
+            self.firewalls = _FirewallsNS()
+
+    client = _StubClient()
+    do._create_firewall(client, cfg)
+
+    inbound = client.firewalls.body["inbound_rules"]
+    anywhere_ports = {
+        r["ports"] for r in inbound if r["sources"].get("addresses") == ["0.0.0.0/0", "::/0"]
+    }
+    assert str(cfg.battery_api_port) in anywhere_ports
+    assert str(cfg.battery_metrics_port) in anywhere_ports
+
+
 def test_battery_renders_are_valid():
     import json
 

@@ -41,7 +41,7 @@ def _capacity(cfg: Config) -> tuple[int, int]:
     return vcpu, mem
 
 
-def _provision_flintlock(cfg: Config, ssh: SSH) -> None:
+def _provision_flintlock(cfg: Config, ssh: SSH, *, enable_exec_api: bool = False) -> None:
     ssh.run("cloud-init status --wait || true", timeout=1200)
     # provision.sh installs the flintlockd release matching FLINTLOCK_VERSION, defaulting to
     # 'latest'. When FLINTLOCK_REF is a semver tag (e.g. v0.10.0) pin the binary to that exact
@@ -58,6 +58,10 @@ def _provision_flintlock(cfg: Config, ssh: SSH) -> None:
         flintlock_grpc_port=cfg.flintlock_grpc_port,
         flintlock_version=flintlock_version,
         guest_agent_version=cfg.guest_agent_version,
+        # battery's reconciler probes guest-agent readiness via flintlockd's native
+        # MicroVMExec service for every VM it provisions (internal/reconciler/provision.go
+        # WaitReady), unconditionally - not just when a pool has create/pre_lease commands.
+        enable_exec_api=enable_exec_api,
     )
     ssh.put(script, "/tmp/provision_host.sh")
     ssh.sudo("bash /tmp/provision_host.sh", timeout=1800)
@@ -156,7 +160,7 @@ def bootstrap_host_battery(cfg: Config, droplet: Droplet, node_index: int) -> No
     ssh = SSH(host=droplet.public_ip, user="root", key_path=cfg.ssh_private_key_path)
     ssh.connect(timeout=cfg.timeout_ssh)
     try:
-        _provision_flintlock(cfg, ssh)
+        _provision_flintlock(cfg, ssh, enable_exec_api=True)
     finally:
         ssh.close()
     log.info("host%d bootstrapped", node_index)
