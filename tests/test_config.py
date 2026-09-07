@@ -102,3 +102,44 @@ def test_invalid_provider_raises(monkeypatch, tmp_path):
 
     with pytest.raises(ConfigError):
         load(dotenv_path=empty_env)
+
+
+def test_battery_defaults(monkeypatch, tmp_path):
+    empty_env = _prime_required(monkeypatch, tmp_path)
+    for var in (
+        "BATTERY_REF",
+        "BATTERY_API_PORT",
+        "BATTERY_METRICS_PORT",
+        "BATTERY_SWEEP_INTERVAL",
+        "BATTERY_WARNING_WINDOW",
+        "TIMEOUT_POOL_AVAILABLE",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    cfg = load(dotenv_path=empty_env)
+
+    assert cfg.battery_ref == "v0.1.0"
+    assert cfg.battery_api_port == 9191
+    assert cfg.battery_metrics_port == 9192
+    assert cfg.battery_sweep_interval == "10s"
+    assert cfg.battery_warning_window == "5s"
+    assert cfg.timeout_pool_available == 300
+
+
+def test_battery_overrides(monkeypatch, tmp_path):
+    empty_env = _prime_required(monkeypatch, tmp_path)
+    monkeypatch.setenv("BATTERY_REF", "v0.2.0")
+    monkeypatch.setenv("BATTERY_API_PORT", "9291")
+    monkeypatch.setenv("BATTERY_METRICS_PORT", "9292")
+    monkeypatch.setenv("BATTERY_SWEEP_INTERVAL", "1s")
+    monkeypatch.setenv("BATTERY_WARNING_WINDOW", "1s")
+    monkeypatch.setenv("TIMEOUT_POOL_AVAILABLE", "600")
+
+    cfg = load(dotenv_path=empty_env)
+
+    assert cfg.battery_ref == "v0.2.0"
+    assert cfg.battery_api_port == 9291
+    assert cfg.battery_metrics_port == 9292
+    assert cfg.battery_sweep_interval == "1s"
+    assert cfg.battery_warning_window == "1s"
+    assert cfg.timeout_pool_available == 600

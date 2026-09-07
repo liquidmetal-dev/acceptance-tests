@@ -10,8 +10,9 @@ from .remote.ssh import SSH
 
 log = logging.getLogger("logs")
 
-# systemd units whose journals we always pull.
-_UNITS = ("flintlockd", "brigade", "containerd")
+# systemd units whose journals we always pull. "battery" only exists on hosts running
+# the battery suite (tests/battery/); journalctl on a missing unit is a harmless no-op.
+_UNITS = ("flintlockd", "brigade", "battery", "containerd")
 
 
 def _diag_commands(cfg: Config, peers: list[Droplet]) -> list[tuple[str, str]]:

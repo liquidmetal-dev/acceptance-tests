@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Install + run poolmgrd (battery's pool manager) as a systemd service.
+# config.json is rendered separately (host-aware) and copied in before this runs.
+set -euo pipefail
+
+BATTERY_DIR=/opt/battery
+BATTERY_VERSION={{ battery_version }}
+ARCH=amd64
+API_PORT={{ api_port }}
+METRICS_PORT={{ metrics_port }}
+URL="https://github.com/liquidmetal-dev/battery/releases/download/v${BATTERY_VERSION}/poolmgrd_${BATTERY_VERSION}_linux_${ARCH}.tar.gz"
+
+mkdir -p "$BATTERY_DIR"
+
+echo "== installing poolmgrd ${BATTERY_VERSION} =="
+if [ ! -x /usr/local/bin/poolmgrd ]; then
+  TMP=$(mktemp -d)
+  curl -fsSL "$URL" -o "$TMP/poolmgrd.tgz"
+  tar -xzf "$TMP/poolmgrd.tgz" -C "$TMP"
+  install -m0755 "$TMP/poolmgrd" /usr/local/bin/poolmgrd
+  rm -rf "$TMP"
+fi
+command -v poolmgrd >/dev/null || { echo "FATAL: poolmgrd not installed"; exit 1; }
+
+echo "== writing battery systemd unit =="
+cat >/etc/systemd/system/battery.service <<EOF
+[Unit]
+Description=poolmgrd (battery acceptance)
+After=network-online.target flintlockd.service
+Wants=network-online.target
+Requires=flintlockd.service
+
+[Service]
+WorkingDirectory=${BATTERY_DIR}
+ExecStart=/usr/local/bin/poolmgrd -config ${BATTERY_DIR}/config.json -db ${BATTERY_DIR}/poolmgr.db
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now battery.service
+
+echo "== waiting for poolmgrd gRPC :${API_PORT} and metrics :${METRICS_PORT} =="
+ok=0
+for i in $(seq 1 60); do
+  if timeout 2 bash -c "</dev/tcp/127.0.0.1/${API_PORT}" 2>/dev/null \
+     && timeout 2 bash -c "</dev/tcp/127.0.0.1/${METRICS_PORT}" 2>/dev/null; then
+    ok=1; break
+  fi
+  sleep 2
+done
+if [ "$ok" != "1" ]; then
+  echo "FATAL: poolmgrd not listening"; journalctl -u battery --no-pager | tail -80; exit 1
+fi
+echo "poolmgrd up"

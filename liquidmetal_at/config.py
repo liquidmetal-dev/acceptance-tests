@@ -75,6 +75,13 @@ class Config:
     flintlock_grpc_port: int
     guest_agent_version: str
 
+    # battery
+    battery_ref: str
+    battery_api_port: int
+    battery_metrics_port: int
+    battery_sweep_interval: str
+    battery_warning_window: str
+
     # timeouts (seconds)
     timeout_provision: int
     timeout_bootstrap: int
@@ -82,6 +89,7 @@ class Config:
     timeout_vm_create: int
     timeout_vm_delete: int
     timeout_ssh: int
+    timeout_pool_available: int
 
     # debugging
     keep_infra_on_failure: bool
@@ -224,12 +232,18 @@ def load(dotenv_path: str | None = None) -> Config:
         # guest-agent + its host-side vsock-connect client are version-locked (same framed
         # protocol); pin both to one release for the guest-agent-over-vsock test.
         guest_agent_version=_env("GUEST_AGENT_VERSION") or "0.1.0",
+        battery_ref=os.environ.get("BATTERY_REF", "v0.1.0"),
+        battery_api_port=int(os.environ.get("BATTERY_API_PORT", "9191")),
+        battery_metrics_port=int(os.environ.get("BATTERY_METRICS_PORT", "9192")),
+        battery_sweep_interval=os.environ.get("BATTERY_SWEEP_INTERVAL", "10s"),
+        battery_warning_window=os.environ.get("BATTERY_WARNING_WINDOW", "5s"),
         timeout_provision=int(os.environ.get("TIMEOUT_PROVISION", "300")),
         timeout_bootstrap=int(os.environ.get("TIMEOUT_BOOTSTRAP", "1200")),
         timeout_cluster=int(os.environ.get("TIMEOUT_CLUSTER", "180")),
         timeout_vm_create=int(os.environ.get("TIMEOUT_VM_CREATE", "300")),
         timeout_vm_delete=int(os.environ.get("TIMEOUT_VM_DELETE", "120")),
         timeout_ssh=int(os.environ.get("TIMEOUT_SSH", "180")),
+        timeout_pool_available=int(os.environ.get("TIMEOUT_POOL_AVAILABLE", "300")),
         keep_infra_on_failure=_bool(os.environ.get("KEEP_INFRA_ON_FAILURE", "false")),
         artifacts_dir=_expand(os.environ.get("ARTIFACTS_DIR", "./artifacts")),
         droplet_count=node_count,

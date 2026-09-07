@@ -1,11 +1,11 @@
 name: reaper
 
-# Post-run cleanup for the e2e workflow. Fires via workflow_run AFTER an e2e run
-# fully concludes, so it still runs even when the e2e runner was terminated
+# Post-run cleanup for the e2e / e2e-battery workflows. Fires via workflow_run AFTER
+# either fully concludes, so it still runs even when the runner was terminated
 # (manual Cancel / timeout-minutes) before the suite's own teardown finished.
 on:
   workflow_run:
-    workflows: [e2e]
+    workflows: [e2e, e2e-battery]
     types: [completed]
 
 permissions:

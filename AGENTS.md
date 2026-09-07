@@ -4,11 +4,17 @@ Guide for coding agents working in this repo. See `README.md` for the full human
 
 ## Overview
 
-End-to-end acceptance suite for **flintlock** microVM orchestration via **brigade**, running
-on real **DigitalOcean** infrastructure. A run provisions a VPC + SSH key + 2 droplets (2
-flintlock hosts) + block volumes + firewall, bootstraps containerd/Firecracker/`flintlockd`
-and a 2-node brigade cluster, drives the flintlock gRPC API through brigade, then tears
-everything down (even on failure).
+End-to-end acceptance suite for **flintlock** microVM orchestration, running on real
+**DigitalOcean** infrastructure. Two independent suites:
+
+- **brigade** (`tests/`) — a run provisions a VPC + SSH key + 2 droplets (2 flintlock hosts) +
+  block volumes + firewall, bootstraps containerd/Firecracker/`flintlockd` and a 2-node
+  brigade cluster, drives the flintlock gRPC API through brigade, then tears everything down.
+- **battery** (`tests/battery/`) — a single-instance MicroVM warm-pool manager (`poolmgrd`,
+  Go, pre-alpha) that dials N flintlockd hosts directly and exposes its own gRPC API
+  (`PoolAdmin`/`Lease`/`Events`). Self-contained (own `conftest.py`), reuses the same DO
+  provisioning + flintlockd bootstrap. See `docs/battery-known-gaps.md` for constraints found
+  while building it (pool `size` must stay `1`; no per-VM placement info in its API).
 
 ## Setup
 
@@ -27,10 +33,12 @@ droplet is a *volume action*, gated separately from `block_storage` (volume crea
 
 ```bash
 .venv/bin/pytest tests/test_cleanup.py   # offline unit checks — no DO token, no infra, fast
-make test                                # full e2e (== pytest -m e2e): real infra, ~20-40 min, costs money
+make test                                # brigade e2e: real infra, ~20-40 min, costs money
+make test-battery                        # battery e2e: real infra, separate run, costs money
 make lint                                # ruff check
-make proto                               # regenerate gRPC stubs
+make proto                               # regenerate gRPC stubs (flintlock + battery)
 make refresh-proto                       # re-fetch + revendor upstream flintlock protos
+make refresh-battery-proto               # re-fetch + revendor battery's own protos
 make clean-tags                          # reap leftover at-* / lm-acceptance-* DO resources
 ```
 
@@ -44,11 +52,13 @@ host `journalctl` is always collected to `artifacts/<run_id>/`.
 liquidmetal_at/
   config.py            env → Config, RUN_ID, validation
   infra/               DigitalOcean provisioning (do.py) + teardown (reaper.py)
-  bootstrap/           host + brigade bootstrap, Jinja2 templates/
-  flintlock/           gRPC client + generated stubs (gen/)
-tests/                 pytest suites (test_cleanup.py offline; e2e marked)
-proto/                 vendored, stripped flintlock protos
-scripts/               refresh_protos.py etc.
+  bootstrap/           host + brigade + battery bootstrap, Jinja2 templates/
+  flintlock/           gRPC client + generated stubs (gen/, shared with battery/)
+  battery/             gRPC client to poolmgrd (PoolAdmin/Lease/Events) + PoolSpec builder
+tests/                 brigade pytest suite (test_cleanup.py offline; e2e marked)
+tests/battery/         battery pytest suite (own conftest.py, e2e marked)
+proto/                 vendored, stripped flintlock + battery protos
+scripts/               refresh_protos.py, refresh_battery_protos.py
 ```
 
 ## Conventions
@@ -64,6 +74,10 @@ These encode best-known upstream behaviour and are the most likely to need versi
 - `bootstrap/templates/provision_host.sh.j2` — `provision.sh` subcommands + `flintlockd run` args.
 - `bootstrap/templates/brigade_config.exs.j2` — brigade `config.exs` schema.
 - `brigade_status.py` — the `/status` JSON schema (parsing is intentionally tolerant).
+- `bootstrap/templates/provision_battery.sh.j2` — the `poolmgrd` release asset naming.
+- `bootstrap/templates/battery_config.json.j2` — poolmgrd's JSON config schema.
+- `proto/poolmgr/v1alpha1/*.proto` — battery's own gRPC surface; battery is pre-alpha, so this
+  is the most likely spot to need a re-vendor when bumping `BATTERY_REF`.
 
 ## Git rules — IMPORTANT
 

@@ -6,5 +6,6 @@ artifacts/
 # Generated gRPC stubs (rebuilt by `make proto`)
 liquidmetal_at/flintlock/gen/flapi/
 liquidmetal_at/flintlock/gen/fltypes/
+liquidmetal_at/flintlock/gen/poolmgr/
 .pytest_cache/
 *.egg-info/
