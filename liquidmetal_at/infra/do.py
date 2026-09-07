@@ -152,6 +152,10 @@ def _create_firewall(c: Client, cfg: Config) -> str:
         tcp("22", anywhere),
         tcp(str(cfg.brigade_grpc_port), anywhere),
         tcp(str(cfg.brigade_status_port), anywhere),
+        # battery's poolmgrd API + metrics (runs on droplet 0 only, but the firewall is
+        # one shared rule set for the whole tagged run)
+        tcp(str(cfg.battery_api_port), anywhere),
+        tcp(str(cfg.battery_metrics_port), anywhere),
         # mesh + south edge only between the run's droplets
         tcp(str(cfg.flintlock_grpc_port), peers),
         tcp(str(EPMD_PORT), peers),

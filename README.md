@@ -32,9 +32,33 @@ liquidmetal_at/
   flintlock/client.py  gRPC client (create/get/list/delete + waiters)
   flintlock/spec.py    MicroVMSpec builder (static IP, cloud-init ssh key)
   brigade_status.py    parse brigade /status (cluster size, placement map)
-proto/                 vendored, stripped flintlock protos (see proto/README.md)
-tests/                 conftest fixtures + 5 scenarios
+  battery/client.py    gRPC client to poolmgrd (PoolAdmin/Lease/Events + waiters)
+  battery/spec.py      PoolSpec builder (reuses flintlock/spec.py for microvm_template)
+  battery/metrics_status.py  tolerant scrape of poolmgrd's /metrics
+proto/                 vendored, stripped flintlock + battery protos (see proto/README.md)
+tests/                 conftest fixtures + 5 brigade scenarios
+tests/battery/         self-contained battery suite (own conftest) — see below
 ```
+
+## battery (tests/battery/)
+
+A second, self-contained suite for **battery** (https://github.com/liquidmetal-dev/battery), a
+MicroVM warm-pool manager for flintlock. Unlike brigade, battery does not replace flintlock's
+API — it's a single-instance Go daemon (`poolmgrd`) that dials N flintlockd hosts directly and
+exposes its own gRPC API (`PoolAdmin`/`Lease`/`Events`). Because the bootstrap and fixture chain
+diverge enough from brigade's, it lives under `tests/battery/` with its own `conftest.py`
+(`config`/`infra`/`hosts`/`poolmgrd_node`/`battery_client`) rather than sharing the root one.
+
+```bash
+cp .env.example .env      # same file — fill in the --- battery --- section too
+set -a && source .env && set +a
+make test-battery          # provisions flintlock hosts + poolmgrd, runs tests/battery/, tears down
+```
+
+`make test` (brigade) and `make test-battery` are independent — each provisions and tears down
+its own infra. `.venv/bin/pytest tests` runs both suites back to back if you want the full,
+more expensive run. See `docs/battery-known-gaps.md` for constraints found while building this
+(pool `size` must stay `1` for now; no per-VM placement info in the API).
 
 ## Prerequisites
 
@@ -124,6 +148,13 @@ tweak against a specific flintlock/brigade version, and are isolated for easy ed
 - **`brigade_status.py`** — the `/status` JSON schema (cluster size + placement map). Parsing
   is tolerant; the placement test falls back to per-host flintlock state on disk.
 - **microVM images** — supplied by you via `MICROVM_KERNEL_IMAGE` / `MICROVM_ROOTFS_IMAGE`.
+- **`bootstrap/templates/provision_battery.sh.j2`** — the `poolmgrd` release asset name
+  (`poolmgrd_<version>_linux_amd64.tar.gz`) and systemd unit.
+- **`bootstrap/templates/battery_config.json.j2`** — poolmgrd's own JSON config schema
+  (`hosts`/`api_server`/`metrics_addr`/`sweep_interval`/`warning_window`).
+- **`proto/poolmgr/v1alpha1/*.proto`** — battery's own gRPC surface. battery is pre-alpha, so
+  this is the most likely spot to need a re-vendor (`make refresh-battery-proto && make proto`)
+  when bumping `BATTERY_REF`.
 
 ### Hypervisor provider
 

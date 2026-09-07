@@ -41,7 +41,7 @@ def _capacity(cfg: Config) -> tuple[int, int]:
     return vcpu, mem
 
 
-def _provision_flintlock(cfg: Config, ssh: SSH) -> None:
+def _provision_flintlock(cfg: Config, ssh: SSH, *, enable_exec_api: bool = False) -> None:
     ssh.run("cloud-init status --wait || true", timeout=1200)
     # provision.sh installs the flintlockd release matching FLINTLOCK_VERSION, defaulting to
     # 'latest'. When FLINTLOCK_REF is a semver tag (e.g. v0.10.0) pin the binary to that exact
@@ -58,6 +58,10 @@ def _provision_flintlock(cfg: Config, ssh: SSH) -> None:
         flintlock_grpc_port=cfg.flintlock_grpc_port,
         flintlock_version=flintlock_version,
         guest_agent_version=cfg.guest_agent_version,
+        # battery's reconciler probes guest-agent readiness via flintlockd's native
+        # MicroVMExec service for every VM it provisions (internal/reconciler/provision.go
+        # WaitReady), unconditionally - not just when a pool has create/pre_lease commands.
+        enable_exec_api=enable_exec_api,
     )
     ssh.put(script, "/tmp/provision_host.sh")
     ssh.sudo("bash /tmp/provision_host.sh", timeout=1800)
@@ -120,3 +124,64 @@ def bootstrap_all(cfg: Config, infra: Infra) -> None:
         ]
         for f in futures:
             f.result()  # re-raise any bootstrap failure
+
+
+def _provision_battery(cfg: Config, ssh: SSH, all_private_ips: list[str]) -> None:
+    """Install + run poolmgrd on this droplet, pointed at every flintlockd host."""
+    battery_version = cfg.battery_ref.removeprefix("v")
+    hosts = [
+        {"name": f"host-{i}", "address": f"{ip}:{cfg.flintlock_grpc_port}"}
+        for i, ip in enumerate(all_private_ips)
+    ]
+    config_json = render(
+        "battery_config.json.j2",
+        hosts=hosts,
+        api_port=cfg.battery_api_port,
+        metrics_port=cfg.battery_metrics_port,
+        sweep_interval=cfg.battery_sweep_interval,
+        warning_window=cfg.battery_warning_window,
+    )
+    ssh.sudo("mkdir -p /opt/battery")
+    ssh.put(config_json, "/tmp/battery_config.json")
+    ssh.sudo("cp /tmp/battery_config.json /opt/battery/config.json")
+
+    script = render(
+        "provision_battery.sh.j2",
+        battery_version=battery_version,
+        api_port=cfg.battery_api_port,
+        metrics_port=cfg.battery_metrics_port,
+    )
+    ssh.put(script, "/tmp/provision_battery.sh")
+    ssh.sudo("bash /tmp/provision_battery.sh", timeout=600)
+
+
+def bootstrap_host_battery(cfg: Config, droplet: Droplet, node_index: int) -> None:
+    log.info("bootstrapping flintlock host%d (%s)", node_index, droplet.public_ip)
+    ssh = SSH(host=droplet.public_ip, user="root", key_path=cfg.ssh_private_key_path)
+    ssh.connect(timeout=cfg.timeout_ssh)
+    try:
+        _provision_flintlock(cfg, ssh, enable_exec_api=True)
+    finally:
+        ssh.close()
+    log.info("host%d bootstrapped", node_index)
+
+
+def bootstrap_all_battery(cfg: Config, infra: Infra) -> None:
+    """Bootstrap flintlock on every droplet in parallel, then poolmgrd on droplet 0
+    (pointed at all of them) - battery is a single-instance manager, not a peer mesh,
+    so unlike brigade it only runs on one node."""
+    with ThreadPoolExecutor(max_workers=len(infra.droplets)) as pool:
+        futures = [
+            pool.submit(bootstrap_host_battery, cfg, d, i)
+            for i, d in enumerate(infra.droplets)
+        ]
+        for f in futures:
+            f.result()  # re-raise any bootstrap failure
+
+    private_ips = [d.private_ip for d in infra.droplets]
+    ssh = SSH(host=infra.droplets[0].public_ip, user="root", key_path=cfg.ssh_private_key_path)
+    ssh.connect(timeout=cfg.timeout_ssh)
+    try:
+        _provision_battery(cfg, ssh, private_ips)
+    finally:
+        ssh.close()

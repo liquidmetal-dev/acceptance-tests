@@ -1,0 +1,14 @@
+{
+  "hosts": [
+    {%- for host in hosts %}
+    { "name": "{{ host.name }}", "address": "{{ host.address }}", "tls": { "insecure": true } }{{ "," if not loop.last }}
+    {%- endfor %}
+  ],
+  "api_server": {
+    "addr": ":{{ api_port }}",
+    "tls": { "insecure": true }
+  },
+  "metrics_addr": ":{{ metrics_port }}",
+  "sweep_interval": "{{ sweep_interval }}",
+  "warning_window": "{{ warning_window }}"
+}

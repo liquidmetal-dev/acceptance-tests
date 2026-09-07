@@ -47,12 +47,18 @@ def _dummy_config(tmp_path) -> Config:
         flintlock_ref="main",
         flintlock_grpc_port=9090,
         guest_agent_version="0.1.0",
+        battery_ref="v0.1.0",
+        battery_api_port=9191,
+        battery_metrics_port=9192,
+        battery_sweep_interval="10s",
+        battery_warning_window="5s",
         timeout_provision=300,
         timeout_bootstrap=1200,
         timeout_cluster=180,
         timeout_vm_create=300,
         timeout_vm_delete=120,
         timeout_ssh=180,
+        timeout_pool_available=300,
         keep_infra_on_failure=False,
         artifacts_dir=str(tmp_path / "artifacts"),
     )
@@ -192,6 +198,62 @@ def test_renders_are_valid():
     )
     assert "ip link add name" in host_sh and "type bridge" in host_sh
     assert "--bridge-name=${BRIDGE}" in host_sh
+
+
+def test_firewall_opens_battery_ports_to_the_runner(tmp_path):
+    """battery_client dials the droplet's public IP, so the runner-facing firewall must
+    open battery_api_port/battery_metrics_port the same way it already does for brigade's
+    ports - not just the peer-only mesh rules."""
+    cfg = _dummy_config(tmp_path)
+
+    class _FirewallsNS:
+        def create(self, body):
+            self.body = body
+            return {"firewall": {"id": "fw1"}}
+
+    class _StubClient:
+        def __init__(self):
+            self.firewalls = _FirewallsNS()
+
+    client = _StubClient()
+    do._create_firewall(client, cfg)
+
+    inbound = client.firewalls.body["inbound_rules"]
+    anywhere_ports = {
+        r["ports"] for r in inbound if r["sources"].get("addresses") == ["0.0.0.0/0", "::/0"]
+    }
+    assert str(cfg.battery_api_port) in anywhere_ports
+    assert str(cfg.battery_metrics_port) in anywhere_ports
+
+
+def test_battery_renders_are_valid():
+    import json
+
+    config_json = render(
+        "battery_config.json.j2",
+        hosts=[
+            {"name": "host-0", "address": "10.0.0.2:9090"},
+            {"name": "host-1", "address": "10.0.0.3:9090"},
+        ],
+        api_port=9191,
+        metrics_port=9192,
+        sweep_interval="10s",
+        warning_window="5s",
+    )
+    parsed = json.loads(config_json)  # must render valid JSON
+    assert parsed["hosts"] == [
+        {"name": "host-0", "address": "10.0.0.2:9090", "tls": {"insecure": True}},
+        {"name": "host-1", "address": "10.0.0.3:9090", "tls": {"insecure": True}},
+    ]
+    assert parsed["api_server"] == {"addr": ":9191", "tls": {"insecure": True}}
+    assert parsed["metrics_addr"] == ":9192"
+
+    battery_sh = render(
+        "provision_battery.sh.j2", battery_version="0.1.0", api_port=9191, metrics_port=9192
+    )
+    assert "BATTERY_VERSION=0.1.0" in battery_sh
+    assert "poolmgrd_${BATTERY_VERSION}_linux_${ARCH}.tar.gz" in battery_sh
+    assert "ExecStart=/usr/local/bin/poolmgrd" in battery_sh
 
 
 def test_cluster_size_reads_partition(monkeypatch):
