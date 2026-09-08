@@ -74,7 +74,13 @@ if [ ! -x /usr/local/bin/flintlockd ]; then
   if [ -f "$FLINTLOCK_DIR/bin/flintlockd" ]; then
     install -m0755 "$FLINTLOCK_DIR/bin/flintlockd" /usr/local/bin/flintlockd
   else
-    (cd "$FLINTLOCK_DIR" && make build 2>/dev/null || true)
+    # provision.sh's release download 404s for flintlock v0.13.0+: those GitHub releases
+    # are still drafts upstream (the git tag exists, but the binary asset was never
+    # published), so the standard releases/download/<tag>/<asset> URL doesn't resolve.
+    # Build from source instead, using the Go toolchain flintlock's own mise.toml pins.
+    command -v mise >/dev/null || curl -fsSL https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh
+    (cd "$FLINTLOCK_DIR" && /usr/local/bin/mise trust && /usr/local/bin/mise install go \
+      && /usr/local/bin/mise exec -- make build-flintlockd) || true
     [ -f "$FLINTLOCK_DIR/bin/flintlockd" ] && install -m0755 "$FLINTLOCK_DIR/bin/flintlockd" /usr/local/bin/flintlockd
   fi
 fi

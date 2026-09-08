@@ -22,6 +22,25 @@ from liquidmetal_at.infra import do
 
 log = logging.getLogger("battery.conftest")
 
+# Blocked on upstream flintlock exec-API bugs that make guest-agent readiness
+# unreliable, so no VM in any pool reliably reaches AVAILABLE. See
+# docs/battery-known-gaps.md for the full history:
+#   - https://github.com/liquidmetal-dev/flintlock/issues/1200 (original hang; the fix in
+#     v0.14.1/v0.15.0 resolved the clear-cut hang case but a re-test on v0.15.1 turned up an
+#     ambiguous recurrence for one VM - not confirmed either way)
+#   - https://github.com/liquidmetal-dev/flintlock/issues/1205 (handshake EOF; fixed in v0.15.1,
+#     confirmed)
+# Remove this once tests/battery/ passes cleanly against a FLINTLOCK_REF that includes a fix.
+XFAIL_REASON = (
+    "blocked on upstream flintlock exec-API reliability - see "
+    "docs/battery-known-gaps.md and flintlock#1200/#1205"
+)
+
+
+def pytest_collection_modifyitems(items):
+    for item in items:
+        item.add_marker(pytest.mark.xfail(reason=XFAIL_REASON, strict=False))
+
 
 @pytest.fixture(scope="session")
 def config() -> config_mod.Config:

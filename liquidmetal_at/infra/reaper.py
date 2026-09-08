@@ -9,6 +9,7 @@ import logging
 import os
 import sys
 
+from dotenv import load_dotenv
 from pydo import Client
 
 PREFIX = "lm-acceptance-"
@@ -18,6 +19,7 @@ log = logging.getLogger("reaper")
 
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    load_dotenv(override=False)
     token = os.environ.get("DO_API_TOKEN", "").strip()
     if not token:
         print("DO_API_TOKEN not set", file=sys.stderr)

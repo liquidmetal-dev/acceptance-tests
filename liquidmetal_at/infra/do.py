@@ -263,11 +263,25 @@ def destroy_by_tag(cfg: Config, c: Client | None = None) -> None:
 
     retry_call(_delete_volumes, timeout=180, description="delete volumes")
 
-    # VPC last (eventual consistency after droplet deletion)
+    # VPC last (eventual consistency after droplet deletion). DO auto-promotes a
+    # region's only VPC to that region's "default" once nothing else claims the
+    # slot, and refuses to delete a default VPC — a terminal, non-retryable state
+    # for an account/region with no other VPC to fall back to. The VPC itself is
+    # free, so leaving it behind costs nothing; just stop retrying and move on.
     def _delete_vpc() -> None:
         for vpc in c.vpcs.list().get("vpcs", []):
             if vpc.get("name") == tag:
-                c.vpcs.delete(vpc_id=vpc["id"])
+                try:
+                    c.vpcs.delete(vpc_id=vpc["id"])
+                except Exception as exc:  # noqa: BLE001
+                    if "default vpc" in str(exc).lower():
+                        log.warning(
+                            "vpc %s is now the region's default VPC and cannot be "
+                            "deleted via the API; leaving it in place (no cost)",
+                            vpc["id"],
+                        )
+                        return
+                    raise
 
     retry_call(_delete_vpc, timeout=180, description="delete vpc")
     log.info("teardown complete for tag=%s", tag)
