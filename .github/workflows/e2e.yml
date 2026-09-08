@@ -23,10 +23,10 @@ on:
         default: s-4vcpu-8gb
       microvm_kernel_image:
         description: microVM kernel OCI image
-        default: ghcr.io/liquidmetal-dev/flintlock-kernel:5.10
+        default: ghcr.io/liquidmetal-dev/firecracker-kernel:5.10-no-acpi
       microvm_rootfs_image:
         description: microVM rootfs OCI image
-        default: ghcr.io/liquidmetal-dev/capmvm-kubernetes:1.28
+        default: ghcr.io/liquidmetal-dev/ubuntu:24.04
       microvm_provider:
         description: Hypervisor provider (firecracker | cloudhypervisor)
         default: firecracker
