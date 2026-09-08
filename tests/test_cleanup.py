@@ -14,7 +14,7 @@ from liquidmetal_at import brigade_status
 from liquidmetal_at.bootstrap import host as host_mod
 from liquidmetal_at.bootstrap.render import render
 from liquidmetal_at.config import Config, ConfigError, _validate_microvm_shape
-from liquidmetal_at.infra import do
+from liquidmetal_at.infra import do, reaper
 
 
 def _dummy_config(tmp_path) -> Config:
@@ -146,6 +146,64 @@ def test_destroy_by_tag_tolerates_missing_tag(tmp_path):
     do.destroy_by_tag(cfg, fake)  # must not raise
     assert any(d.startswith("volumes:") for d in fake.deletes)
     assert any(d.startswith("vpcs:") for d in fake.deletes)
+
+
+def test_destroy_tag_retries_transient_vpc_error(tmp_path):
+    """DO's droplet destroy is async: the VPC's member list can still show a droplet
+    as present for a moment after the destroy call returns, so the first VPC-delete
+    attempt can 422. destroy_by_tag must retry (not give up on the first failure)."""
+    cfg = _dummy_config(tmp_path)
+    fake = _FakeDO(cfg.tag)
+
+    real_delete = fake.vpcs.delete
+    attempts = {"n": 0}
+
+    def flaky_delete(**kw):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise RuntimeError("422 vpc_has_resources: this VPC has resource(s) in it")
+        return real_delete(**kw)
+
+    fake.vpcs.delete = flaky_delete
+
+    do.destroy_by_tag(cfg, fake)
+
+    assert attempts["n"] == 2
+    assert fake._vpcs == []
+
+
+def test_reap_tag_leaves_tag_for_retry_when_teardown_fails(tmp_path, monkeypatch):
+    """If a tag's teardown fails (retries exhausted), reap_tag must NOT delete the DO
+    tag — deleting it would erase the only breadcrumb a future sweep uses to find and
+    retry the leftover resources, silently orphaning them forever."""
+    cfg = _dummy_config(tmp_path)
+    fake = _FakeDO(cfg.tag)
+
+    def always_fails(**kw):
+        raise RuntimeError("422 vpc_has_resources: this VPC has resource(s) in it")
+
+    fake.vpcs.delete = always_fails
+
+    # Cap the retry timeout so the always-failing case doesn't burn the real 180s budget.
+    from liquidmetal_at import waiter as waiter_mod
+
+    def fast_retry_call(fn, *, timeout, **kw):
+        return waiter_mod.retry_call(fn, timeout=min(timeout, 2), **kw)
+
+    monkeypatch.setattr("liquidmetal_at.infra.do.retry_call", fast_retry_call)
+
+    tag_deletes: list[str] = []
+
+    class _TagsNS:
+        def delete(self, tag_id):
+            tag_deletes.append(tag_id)
+
+    fake.tags = _TagsNS()
+
+    ok = reaper.reap_tag(fake, cfg.tag)
+
+    assert ok is False
+    assert tag_deletes == []
 
 
 def test_static_ip_allocation(tmp_path):

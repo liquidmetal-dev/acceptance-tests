@@ -12,9 +12,31 @@ import sys
 from dotenv import load_dotenv
 from pydo import Client
 
+from .do import destroy_tag
+
 PREFIX = "lm-acceptance-"
 
 log = logging.getLogger("reaper")
+
+
+def reap_tag(c: Client, tag: str) -> bool:
+    """Tear down one tag's resources via the shared retry-protected teardown.
+
+    Returns whether the tag itself was deleted. On failure the tag is left in
+    place (not deleted) so the next sweep rediscovers it and retries — deleting
+    it unconditionally would silently orphan whatever failed to tear down.
+    """
+    try:
+        destroy_tag(c, tag)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("teardown for %s failed, leaving tag for next sweep: %s", tag, exc)
+        return False
+    try:
+        c.tags.delete(tag_id=tag)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("tag delete: %s", exc)
+        return False
+    return True
 
 
 def main() -> int:
@@ -37,29 +59,7 @@ def main() -> int:
 
     for tag in sorted(tags):
         log.info("reaping tag %s", tag)
-        for fw in c.firewalls.list().get("firewalls", []):
-            if fw.get("name") == tag:
-                c.firewalls.delete(firewall_id=fw["id"])
-        try:
-            c.droplets.destroy_by_tag(tag_name=tag)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("droplet destroy for %s: %s", tag, exc)
-        for vol in c.volumes.list().get("volumes", []):
-            if tag in vol.get("name", "") or tag in (vol.get("tags") or []):
-                try:
-                    c.volumes.delete(volume_id=vol["id"])
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("volume delete: %s", exc)
-        for vpc in c.vpcs.list().get("vpcs", []):
-            if vpc.get("name") == tag:
-                try:
-                    c.vpcs.delete(vpc_id=vpc["id"])
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("vpc delete: %s", exc)
-        try:
-            c.tags.delete(tag_id=tag)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("tag delete: %s", exc)
+        reap_tag(c, tag)
     return 0
 
 
