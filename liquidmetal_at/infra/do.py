@@ -223,13 +223,18 @@ def provision(cfg: Config, user_data_for: callable) -> Infra:
 
 
 def destroy_by_tag(cfg: Config, c: Client | None = None) -> None:
-    """Idempotently delete every resource tagged for this run.
+    """Idempotently delete every resource tagged for this run."""
+    destroy_tag(c or client(cfg), cfg.tag)
+
+
+def destroy_tag(c: Client, tag: str) -> None:
+    """Idempotently delete every DO resource tagged/named ``tag``.
 
     Order matters on DO: firewall + droplets before the VPC (a VPC with members
-    won't delete), volumes after their droplets detach. Safe to call twice.
+    won't delete), volumes after their droplets detach. Safe to call twice. Shared
+    by the pytest teardown fixtures (via :func:`destroy_by_tag`) and the orphan
+    sweep in ``reaper.py``, so both paths get the same retry/backoff protection.
     """
-    c = c or client(cfg)
-    tag = cfg.tag
     log.info("tearing down DO infra tag=%s", tag)
 
     # firewalls (matched by name == tag)
