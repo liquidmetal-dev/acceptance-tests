@@ -47,10 +47,15 @@ _SUN_PATH_MAX = 107  # sizeof(sockaddr_un.sun_path) - 1 for the NUL terminator
 
 
 def guest_agent_vsock_path_len(name: str, namespace: str) -> int:
-    """Length of the vsock socket path flintlock will bind for a VM in this pool."""
-    return len(
-        _VSOCK_PATH_TEMPLATE.format(namespace=namespace, name=name, uid="x" * _FLINTLOCK_UID_LEN)
+    """Length in bytes of the vsock socket path flintlock will bind for a VM in this pool.
+
+    Measured as UTF-8: ``sun_path`` is a byte limit, and a non-ASCII namespace/name takes more
+    bytes than characters.
+    """
+    path = _VSOCK_PATH_TEMPLATE.format(
+        namespace=namespace, name=name, uid="x" * _FLINTLOCK_UID_LEN
     )
+    return len(path.encode("utf-8"))
 
 
 def build_pool_spec(

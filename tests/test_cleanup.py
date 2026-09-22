@@ -6,6 +6,7 @@ that mutates its own state on delete, proving ``destroy_by_tag`` is safe to call
 """
 from __future__ import annotations
 
+import dataclasses
 import types
 
 import pytest
@@ -509,3 +510,9 @@ def test_battery_pool_spec_rejects_overlong_vsock_path(tmp_path):
         build_pool_spec(
             cfg, f"{cfg.run_id}-pool-lifecycle", index=0, size=1, flintlock_hosts=["host-0"]
         )
+
+    # sun_path is a byte limit: a non-ASCII namespace that fits in characters must still fail.
+    wide = dataclasses.replace(cfg, microvm_namespace="é" * 16)
+    assert guest_agent_vsock_path_len("pool-lifecycle", wide.microvm_namespace) == 123
+    with pytest.raises(ValueError, match="battery/issues/94"):
+        build_pool_spec(wide, "pool-lifecycle", index=0, size=1, flintlock_hosts=["host-0"])
