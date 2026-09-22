@@ -30,11 +30,20 @@ log = logging.getLogger("battery.conftest")
 #     ambiguous recurrence for one VM - not confirmed either way)
 #   - https://github.com/liquidmetal-dev/flintlock/issues/1205 (handshake EOF; fixed in v0.15.1,
 #     confirmed)
-# Remove this once tests/battery/ passes cleanly against a FLINTLOCK_REF that includes a fix.
+# Two further causes of "never reaches AVAILABLE" have since been fixed and not yet re-run on
+# real infra: event-driven pools were never seeded before battery v0.3.2, and before flintlock
+# v0.15.2 the guest-agent vsock socket path embedded namespace + VM id and overflowed sun_path
+# (battery#94, fixed flintlock-side by flintlock#1227). Remove this once tests/battery/ passes
+# cleanly on BATTERY_REF=v0.3.2 + FLINTLOCK_REF=v0.15.2 (or newer).
 XFAIL_REASON = (
-    "blocked on upstream flintlock exec-API reliability - see "
-    "docs/battery-known-gaps.md and flintlock#1200/#1205"
+    "pending a clean e2e run on battery v0.3.2 + flintlock v0.15.2 - see "
+    "docs/battery-known-gaps.md, flintlock#1200/#1205 and battery#94"
 )
+
+# battery v0.3.1+ names each VM <pool-name>-<8 hex>; flintlock before v0.15.2 put that into the
+# guest-agent socket path, overflowing sun_path so every VM fails late with "connect: invalid
+# argument" (flintlock#1226). Fail the session up front instead of timing out every test.
+MIN_FLINTLOCK_REF = "v0.15.2"
 
 
 def pytest_collection_modifyitems(items):
@@ -44,7 +53,15 @@ def pytest_collection_modifyitems(items):
 
 @pytest.fixture(scope="session")
 def config() -> config_mod.Config:
-    return config_mod.load()
+    cfg = config_mod.load()
+    if config_mod.flintlock_ref_below(cfg.flintlock_ref, MIN_FLINTLOCK_REF):
+        pytest.exit(
+            f"tests/battery/ needs FLINTLOCK_REF >= {MIN_FLINTLOCK_REF} (got {cfg.flintlock_ref}): "
+            "older flintlock overflows the guest-agent socket path for battery's VM ids - "
+            "see https://github.com/liquidmetal-dev/flintlock/issues/1226",
+            returncode=2,
+        )
+    return cfg
 
 
 @pytest.fixture(scope="session")

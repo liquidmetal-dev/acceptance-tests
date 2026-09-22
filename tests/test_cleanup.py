@@ -47,11 +47,12 @@ def _dummy_config(tmp_path) -> Config:
         flintlock_ref="main",
         flintlock_grpc_port=9090,
         guest_agent_version="0.1.0",
-        battery_ref="v0.1.0",
+        battery_ref="v0.3.2",
         battery_api_port=9191,
         battery_metrics_port=9192,
         battery_sweep_interval="10s",
         battery_warning_window="5s",
+        battery_log_level="debug",
         timeout_provision=300,
         timeout_bootstrap=1200,
         timeout_cluster=180,
@@ -307,9 +308,15 @@ def test_battery_renders_are_valid():
     assert parsed["metrics_addr"] == ":9192"
 
     battery_sh = render(
-        "provision_battery.sh.j2", battery_version="0.1.0", api_port=9191, metrics_port=9192
+        "provision_battery.sh.j2",
+        battery_version="0.3.2",
+        api_port=9191,
+        metrics_port=9192,
+        log_level="info",
     )
-    assert "BATTERY_VERSION=0.1.0" in battery_sh
+    assert "BATTERY_VERSION=0.3.2" in battery_sh
+    assert "LOG_LEVEL=info" in battery_sh
+    assert "-log-level ${LOG_LEVEL}" in battery_sh
     assert "poolmgrd_${BATTERY_VERSION}_linux_${ARCH}.tar.gz" in battery_sh
     assert "ExecStart=/usr/local/bin/poolmgrd" in battery_sh
 
@@ -482,3 +489,15 @@ def test_provision_host_installs_vsock_connect(tmp_path):
     assert 'GA_VER="0.1.0"' in host_sh
     assert "vsock-connect_${GA_VER}_linux_amd64.tar.gz" in host_sh
     assert "install -m0755 \"$GA_BIN\" /usr/local/bin/vsock-connect" in host_sh
+
+
+
+@pytest.mark.parametrize(
+    ("ref", "below"),
+    [("v0.15.1", True), ("v0.14.9", True), ("v0.15.2", False), ("v0.16.0", False),
+     ("v1.0.0", False), ("main", False), ("abc1234", False)],
+)
+def test_flintlock_ref_below(ref, below):
+    from liquidmetal_at.config import flintlock_ref_below
+
+    assert flintlock_ref_below(ref, "v0.15.2") is below

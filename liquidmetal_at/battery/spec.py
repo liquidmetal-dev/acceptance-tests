@@ -14,13 +14,18 @@ install the agent software) and flintlockd needs ``--enable-exec-api``
 (``bootstrap/host.py::bootstrap_host_battery`` passes ``enable_exec_api=True``). Without both,
 every VM in every pool times out in ``CREATE_HOOK_RUNNING`` and never reaches ``AVAILABLE``.
 
-CAUTION - verified directly from upstream (``internal/reconciler/provision.go``): the
-reconciler clones ``pool.microvm_template`` **verbatim** for every VM in the pool (only
-``allow_guest_agent`` is overridden server-side) - it does not vary ``id``, the static IP,
-or the interface's ``guest_mac`` per VM. A pool with ``size > 1`` built from a template
-that carries a static address (as ``build_spec`` does) will send duplicate specs to
-flintlock. See docs/battery-known-gaps.md. Keep ``size=1`` for every pool this suite
-creates until upstream supports per-VM template variation.
+CAUTION - verified directly from upstream (``internal/reconciler/provision.go``, v0.3.2): the
+reconciler clones ``pool.microvm_template`` for every VM in the pool and only overrides
+``allow_guest_agent``, ``namespace`` (when empty) and, since v0.3.1, ``id`` - which it sets to
+``<pool-name>-<8 hex>`` per VM, so the template's own ``id`` is ignored. The static IP and the
+interface's ``guest_mac`` are still cloned verbatim, so a pool with ``size > 1`` built from a
+template that carries a static address (as ``build_spec`` does) would hand every VM the same
+address. See docs/battery-known-gaps.md. Keep ``size=1`` for every pool this suite creates
+until upstream supports per-VM address variation.
+
+NOTE - since flintlock v0.15.2 the per-VM sockets live at ``/run/flintlock/<uid>/``, so
+battery's generated ``id`` (and hence pool name/namespace length) no longer affects the
+guest-agent vsock socket path (flintlock#1226, battery#94).
 """
 from __future__ import annotations
 

@@ -112,6 +112,24 @@ class PoolManagerClient:
     def release_vm(self, lease_id: str) -> None:
         self._lease.ReleaseVM(lease_pb2.ReleaseVMRequest(lease_id=lease_id), timeout=self._timeout)
 
+    def list_leases(
+        self, pool_name: str | None = None, pool_namespace: str | None = None
+    ) -> list[types_pb2.LeaseRecord]:
+        """Every live lease, optionally filtered to one pool (battery >= v0.2.0).
+
+        poolmgrd deletes the lease row on release and on sweeper expiry, so a lease's
+        absence here is the direct signal that it's gone.
+        """
+        req = lease_pb2.ListLeasesRequest()
+        if pool_name is not None:
+            req.pool_ref.name = pool_name
+            req.pool_ref.namespace = pool_namespace or ""
+        resp = self._lease.ListLeases(req, timeout=self._timeout)
+        return list(resp.leases)
+
+    def lease_ids(self, pool_name: str, pool_namespace: str) -> set[str]:
+        return {lease.lease_id for lease in self.list_leases(pool_name, pool_namespace)}
+
     # --- Events ---
 
     def subscribe(
