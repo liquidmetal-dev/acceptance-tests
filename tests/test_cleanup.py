@@ -47,11 +47,12 @@ def _dummy_config(tmp_path) -> Config:
         flintlock_ref="main",
         flintlock_grpc_port=9090,
         guest_agent_version="0.1.0",
-        battery_ref="v0.1.0",
+        battery_ref="v0.3.2",
         battery_api_port=9191,
         battery_metrics_port=9192,
         battery_sweep_interval="10s",
         battery_warning_window="5s",
+        battery_log_level="debug",
         timeout_provision=300,
         timeout_bootstrap=1200,
         timeout_cluster=180,
@@ -307,9 +308,15 @@ def test_battery_renders_are_valid():
     assert parsed["metrics_addr"] == ":9192"
 
     battery_sh = render(
-        "provision_battery.sh.j2", battery_version="0.1.0", api_port=9191, metrics_port=9192
+        "provision_battery.sh.j2",
+        battery_version="0.3.2",
+        api_port=9191,
+        metrics_port=9192,
+        log_level="info",
     )
-    assert "BATTERY_VERSION=0.1.0" in battery_sh
+    assert "BATTERY_VERSION=0.3.2" in battery_sh
+    assert "LOG_LEVEL=info" in battery_sh
+    assert "-log-level ${LOG_LEVEL}" in battery_sh
     assert "poolmgrd_${BATTERY_VERSION}_linux_${ARCH}.tar.gz" in battery_sh
     assert "ExecStart=/usr/local/bin/poolmgrd" in battery_sh
 
@@ -482,3 +489,23 @@ def test_provision_host_installs_vsock_connect(tmp_path):
     assert 'GA_VER="0.1.0"' in host_sh
     assert "vsock-connect_${GA_VER}_linux_amd64.tar.gz" in host_sh
     assert "install -m0755 \"$GA_BIN\" /usr/local/bin/vsock-connect" in host_sh
+
+
+def test_battery_pool_spec_rejects_overlong_vsock_path(tmp_path):
+    """battery v0.3.1+ puts the pool name in the guest-agent vsock socket path; an over-long
+    name must fail offline rather than as 'connect: invalid argument' on every VM."""
+    from liquidmetal_at.battery.spec import build_pool_spec, guest_agent_vsock_path_len
+
+    cfg = _dummy_config(tmp_path)
+    ns = cfg.microvm_namespace
+    for name in ("pool-lifecycle", "pool-claim", "pool-events", "pool-expiry"):
+        assert guest_agent_vsock_path_len(name, ns) <= 107
+        spec = build_pool_spec(cfg, name, index=0, size=1, flintlock_hosts=["host-0"])
+        assert spec.name == name
+
+    # The old run_id-prefixed naming overflowed sun_path.
+    assert guest_agent_vsock_path_len(f"{cfg.run_id}-pool-lifecycle", ns) > 107
+    with pytest.raises(ValueError, match="battery/issues/94"):
+        build_pool_spec(
+            cfg, f"{cfg.run_id}-pool-lifecycle", index=0, size=1, flintlock_hosts=["host-0"]
+        )

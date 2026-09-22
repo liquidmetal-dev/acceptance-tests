@@ -1,11 +1,10 @@
 """Happy-path pool lifecycle: create -> reconciler provisions -> get/list -> delete.
 
 Pool size is deliberately 1 - verified directly from upstream
-(``internal/reconciler/provision.go``) that the reconciler clones ``microvm_template``
-byte-for-byte for every VM in the pool (only ``allow_guest_agent`` is overridden
-server-side), so a template carrying a static IP (as ours does, see
-``liquidmetal_at/flintlock/spec.py``) is only safe for size=1 pools. See
-docs/battery-known-gaps.md.
+(``internal/reconciler/provision.go``, v0.3.2) that the reconciler gives each VM its own ``id``
+but still clones the template's static IP and ``guest_mac`` verbatim, so a template carrying a
+static IP (as ours does, see ``liquidmetal_at/flintlock/spec.py``) is only safe for size=1
+pools. See docs/battery-known-gaps.md.
 """
 from __future__ import annotations
 
@@ -17,7 +16,9 @@ from liquidmetal_at.battery.spec import build_pool_spec
 
 @pytest.mark.e2e
 def test_pool_lifecycle(config, battery_client, poolmgrd_node, hosts, vm_index):
-    pool_name = f"{config.run_id}-pool-lifecycle"
+    # No run_id prefix: the namespace already isolates the run, and the pool name is
+    # part of a length-limited socket path (see battery/spec.py).
+    pool_name = "pool-lifecycle"
     flintlock_hosts = [f"host-{i}" for i in range(len(hosts.droplets))]
 
     spec = build_pool_spec(
@@ -36,6 +37,7 @@ def test_pool_lifecycle(config, battery_client, poolmgrd_node, hosts, vm_index):
     )
     assert ready.status.available_count >= 1
     assert ready.status.leased_count == 0
+    assert battery_client.list_leases(pool_name, config.microvm_namespace) == []
 
     fetched = battery_client.get_pool(pool_name, config.microvm_namespace)
     assert fetched.spec.name == pool_name

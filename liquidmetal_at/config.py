@@ -81,6 +81,7 @@ class Config:
     battery_metrics_port: int
     battery_sweep_interval: str
     battery_warning_window: str
+    battery_log_level: str
 
     # timeouts (seconds)
     timeout_provision: int
@@ -160,6 +161,7 @@ def _validate_microvm_shape(mem_mb: int, vcpu: int, kernel_filename: str) -> Non
 
 
 _PROVIDERS = ("firecracker", "cloudhypervisor")
+_BATTERY_LOG_LEVELS = ("debug", "info", "warn", "error")
 
 
 def load(dotenv_path: str | None = None) -> Config:
@@ -200,6 +202,14 @@ def load(dotenv_path: str | None = None) -> Config:
             f"MICROVM_PROVIDER={provider!r} invalid; must be one of {_PROVIDERS}"
         )
 
+    # poolmgrd's -log-level flag (battery >= v0.3.0); poolmgrd exits at startup on anything else.
+    battery_log_level = (_env("BATTERY_LOG_LEVEL") or "debug").lower()
+    if battery_log_level not in _BATTERY_LOG_LEVELS:
+        raise ConfigError(
+            f"BATTERY_LOG_LEVEL={battery_log_level!r} invalid; "
+            f"must be one of {_BATTERY_LOG_LEVELS}"
+        )
+
     cfg = Config(
         do_token=token,
         do_region=os.environ.get("DO_REGION", "nyc3"),
@@ -232,11 +242,12 @@ def load(dotenv_path: str | None = None) -> Config:
         # guest-agent + its host-side vsock-connect client are version-locked (same framed
         # protocol); pin both to one release for the guest-agent-over-vsock test.
         guest_agent_version=_env("GUEST_AGENT_VERSION") or "0.1.0",
-        battery_ref=os.environ.get("BATTERY_REF", "v0.1.0"),
+        battery_ref=os.environ.get("BATTERY_REF", "v0.3.2"),
         battery_api_port=int(os.environ.get("BATTERY_API_PORT", "9191")),
         battery_metrics_port=int(os.environ.get("BATTERY_METRICS_PORT", "9192")),
         battery_sweep_interval=os.environ.get("BATTERY_SWEEP_INTERVAL", "10s"),
         battery_warning_window=os.environ.get("BATTERY_WARNING_WINDOW", "5s"),
+        battery_log_level=battery_log_level,
         timeout_provision=int(os.environ.get("TIMEOUT_PROVISION", "300")),
         timeout_bootstrap=int(os.environ.get("TIMEOUT_BOOTSTRAP", "1200")),
         timeout_cluster=int(os.environ.get("TIMEOUT_CLUSTER", "180")),

@@ -150,6 +150,7 @@ def _provision_battery(cfg: Config, ssh: SSH, all_private_ips: list[str]) -> Non
         battery_version=battery_version,
         api_port=cfg.battery_api_port,
         metrics_port=cfg.battery_metrics_port,
+        log_level=cfg.battery_log_level,
     )
     ssh.put(script, "/tmp/provision_battery.sh")
     ssh.sudo("bash /tmp/provision_battery.sh", timeout=600)

@@ -30,10 +30,14 @@ log = logging.getLogger("battery.conftest")
 #     ambiguous recurrence for one VM - not confirmed either way)
 #   - https://github.com/liquidmetal-dev/flintlock/issues/1205 (handshake EOF; fixed in v0.15.1,
 #     confirmed)
-# Remove this once tests/battery/ passes cleanly against a FLINTLOCK_REF that includes a fix.
+# Two battery-side causes of "never reaches AVAILABLE" have since been fixed or worked around
+# and have not yet been re-run on real infra: event-driven pools were never seeded before
+# battery v0.3.2, and v0.3.1+'s generated VM id overflowed the guest-agent vsock socket path
+# with this suite's old run_id-prefixed pool names (battery#94). Remove this once tests/battery/
+# passes cleanly on BATTERY_REF=v0.3.2 + FLINTLOCK_REF=v0.15.1 (or newer).
 XFAIL_REASON = (
-    "blocked on upstream flintlock exec-API reliability - see "
-    "docs/battery-known-gaps.md and flintlock#1200/#1205"
+    "pending a clean e2e run on battery v0.3.2 + flintlock v0.15.1 - see "
+    "docs/battery-known-gaps.md, flintlock#1200/#1205 and battery#94"
 )
 
 

@@ -14,13 +14,22 @@ install the agent software) and flintlockd needs ``--enable-exec-api``
 (``bootstrap/host.py::bootstrap_host_battery`` passes ``enable_exec_api=True``). Without both,
 every VM in every pool times out in ``CREATE_HOOK_RUNNING`` and never reaches ``AVAILABLE``.
 
-CAUTION - verified directly from upstream (``internal/reconciler/provision.go``): the
-reconciler clones ``pool.microvm_template`` **verbatim** for every VM in the pool (only
-``allow_guest_agent`` is overridden server-side) - it does not vary ``id``, the static IP,
-or the interface's ``guest_mac`` per VM. A pool with ``size > 1`` built from a template
-that carries a static address (as ``build_spec`` does) will send duplicate specs to
-flintlock. See docs/battery-known-gaps.md. Keep ``size=1`` for every pool this suite
-creates until upstream supports per-VM template variation.
+CAUTION - verified directly from upstream (``internal/reconciler/provision.go``, v0.3.2): the
+reconciler clones ``pool.microvm_template`` for every VM in the pool and only overrides
+``allow_guest_agent``, ``namespace`` (when empty) and, since v0.3.1, ``id`` - which it sets to
+``<pool-name>-<8 hex>`` per VM, so the template's own ``id`` is ignored. The static IP and the
+interface's ``guest_mac`` are still cloned verbatim, so a pool with ``size > 1`` built from a
+template that carries a static address (as ``build_spec`` does) would hand every VM the same
+address. See docs/battery-known-gaps.md. Keep ``size=1`` for every pool this suite creates
+until upstream supports per-VM address variation.
+
+CAUTION - that generated ``id`` becomes a directory in the guest-agent's vsock socket path
+(``/var/lib/flintlock/vm/<namespace>/<id>/<uid>/guest-agent.vsock``), a Unix socket bound by
+Linux's 108-byte ``sun_path`` (107 usable). Upstream doesn't length-check pool names, so an
+over-long ``namespace`` + ``name`` is accepted by ``CreatePool`` and then fails every VM late
+with ``connect: invalid argument`` (https://github.com/liquidmetal-dev/battery/issues/94).
+:func:`build_pool_spec` rejects such names up front; keep pool names short and don't prefix
+them with ``run_id`` - the namespace (``run_id`` by default) already isolates each run.
 """
 from __future__ import annotations
 
@@ -29,6 +38,19 @@ from poolmgr.v1alpha1 import types_pb2  # noqa: E402
 from ..config import Config
 from ..flintlock.spec import build_spec
 from . import _flintlock  # noqa: F401
+
+# Mirrors flintlock's on-disk layout (pkg/defaults StateRootDir + GuestAgentVsockName) and
+# battery's generated id suffix (internal/reconciler/provision.go, v0.3.1+).
+_VSOCK_PATH_TEMPLATE = "/var/lib/flintlock/vm/{namespace}/{name}-xxxxxxxx/{uid}/guest-agent.vsock"
+_FLINTLOCK_UID_LEN = 26  # ULID
+_SUN_PATH_MAX = 107  # sizeof(sockaddr_un.sun_path) - 1 for the NUL terminator
+
+
+def guest_agent_vsock_path_len(name: str, namespace: str) -> int:
+    """Length of the vsock socket path flintlock will bind for a VM in this pool."""
+    return len(
+        _VSOCK_PATH_TEMPLATE.format(namespace=namespace, name=name, uid="x" * _FLINTLOCK_UID_LEN)
+    )
 
 
 def build_pool_spec(
@@ -45,6 +67,15 @@ def build_pool_spec(
     heartbeat_interval_s: int = 30,
     heartbeat_expiry_threshold_s: int = 300,
 ) -> types_pb2.PoolSpec:
+    path_len = guest_agent_vsock_path_len(name, cfg.microvm_namespace)
+    if path_len > _SUN_PATH_MAX:
+        raise ValueError(
+            f"pool {cfg.microvm_namespace}/{name}: guest-agent vsock path would be {path_len} "
+            f"bytes (> {_SUN_PATH_MAX}), so every VM would fail with 'connect: invalid "
+            "argument' - shorten the pool name or MICROVM_NAMESPACE "
+            "(see https://github.com/liquidmetal-dev/battery/issues/94)"
+        )
+
     strategy = types_pb2.ReplenishmentStrategy(type=replenishment_strategy)
     if replenishment_strategy == types_pb2.MIN_SIZE_THRESHOLD:
         strategy.min_size = min_size if min_size is not None else size

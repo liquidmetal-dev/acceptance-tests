@@ -8,6 +8,7 @@ BATTERY_VERSION={{ battery_version }}
 ARCH=amd64
 API_PORT={{ api_port }}
 METRICS_PORT={{ metrics_port }}
+LOG_LEVEL={{ log_level }}
 URL="https://github.com/liquidmetal-dev/battery/releases/download/v${BATTERY_VERSION}/poolmgrd_${BATTERY_VERSION}_linux_${ARCH}.tar.gz"
 
 mkdir -p "$BATTERY_DIR"
@@ -32,7 +33,7 @@ Requires=flintlockd.service
 
 [Service]
 WorkingDirectory=${BATTERY_DIR}
-ExecStart=/usr/local/bin/poolmgrd -config ${BATTERY_DIR}/config.json -db ${BATTERY_DIR}/poolmgr.db
+ExecStart=/usr/local/bin/poolmgrd -config ${BATTERY_DIR}/config.json -db ${BATTERY_DIR}/poolmgr.db -log-level ${LOG_LEVEL}
 Restart=on-failure
 RestartSec=5
 

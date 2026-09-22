@@ -7,7 +7,7 @@ strip). The only rewrite needed is the same clash-avoidance re-point
 `fltypes/microvm.proto`, so `poolmgr.v1alpha1.PoolSpec.microvm_template` resolves against
 the vendored flintlock types.
 
-Usage:  BATTERY_REF=v0.1.0 python scripts/refresh_battery_protos.py
+Usage:  BATTERY_REF=v0.3.2 python scripts/refresh_battery_protos.py
 """
 from __future__ import annotations
 

@@ -1,22 +1,48 @@
 # battery known gaps (tests/battery/)
 
 Notes from building the battery acceptance suite (https://github.com/liquidmetal-dev/battery,
-pre-alpha at `v0.1.0`) against this repo's real-infra pattern. Filed here rather than upstream
+pre-alpha, last updated for `v0.3.2`) against this repo's real-infra pattern. Filed here rather than upstream
 issues since these are usage constraints confirmed by reading the source, not yet reported bugs.
 
-## `PoolSpec.microvm_template` is applied verbatim to every VM in the pool
+## `PoolSpec.microvm_template`'s network config is applied verbatim to every VM in the pool
 
 Confirmed by reading `internal/reconciler/provision.go`: `Provision` clones
-`pool.GetMicrovmTemplate()` with `proto.Clone` and only overrides `AllowGuestAgent` server-side
-before calling `CreateMicroVM`. Nothing else — `id`, the interface's static IP, and
-`guest_mac` are all reused byte-for-byte for every VM the reconciler provisions for that pool.
+`pool.GetMicrovmTemplate()` with `proto.Clone` and overrides `AllowGuestAgent`, `Namespace`
+(only when empty) and — since v0.3.1 (`943c521`, "assign each provisioned VM its own id") —
+`Id`, which it sets to `<pool-name>-<8 hex>` per VM. The interface's static IP and `guest_mac`
+are still reused byte-for-byte for every VM the reconciler provisions for that pool.
 
 Our `microvm_template` (`liquidmetal_at/flintlock/spec.py::build_spec`, reused from the brigade
 suite) sets a static IP per VM `index` — fine for a single flintlock create, but unsafe for a
-battery pool with `size > 1`: every VM in the pool would get the identical static address and
-`id`. `tests/battery/` works around this by keeping every pool's `size` at `1`. If a future
+battery pool with `size > 1`: every VM in the pool would get the identical static address.
+`tests/battery/` works around this by keeping every pool's `size` at `1`. If a future
 scenario needs `size > 1`, either use a template with a DHCP/MMDS-based address instead of a
-static one, or wait for upstream to support per-VM template variation.
+static one, or wait for upstream to support per-VM address variation.
+
+## Pool name + namespace must fit the guest-agent vsock socket path (battery#94)
+
+The v0.3.1 generated id becomes a directory in flintlock's guest-agent socket path,
+`/var/lib/flintlock/vm/<namespace>/<pool-name>-xxxxxxxx/<26-char ULID>/guest-agent.vsock`, which
+Linux caps at 107 usable bytes (`sun_path`). That leaves **30 bytes** for `namespace` + pool
+name combined. Upstream doesn't validate this: `CreatePool` accepts an over-long pool, and every
+VM then fails after `CreateMicroVM` succeeds, with `connect: invalid argument`.
+
+This suite used to name pools `<run_id>-pool-<x>` in namespace `<run_id>` (`at-xxxxxxxx`),
+which came to about 114 bytes — over the limit for every test. Pools are now named `pool-<x>`
+(the namespace already isolates the run), and `battery/spec.py::build_pool_spec` raises
+`ValueError` offline for anything over the limit, including a long `MICROVM_NAMESPACE`
+override. Filed upstream: https://github.com/liquidmetal-dev/battery/issues/94.
+
+## Event-driven pools were never seeded before v0.3.2
+
+Before battery v0.3.2 (`327efbb`, "seed event-driven pools when their reconciler starts"), a
+`REPLACE_ON_DELETE` or `IMMEDIATE_ON_LEASE` pool only provisioned in response to a delete or a
+claim. A freshly created pool was empty, so nothing could be claimed or deleted, and it never
+provisioned anything. 3 of the 4 tests here (`test_claim_release`, `test_events`,
+`test_lease_expiry`) use `REPLACE_ON_DELETE`, so on v0.1.0 they would have timed out waiting for
+`AVAILABLE` regardless of flintlock. This is likely a contributor to the failures below that
+were attributed only to flintlock's exec API. v0.3.2 tops these pools up to `size` whenever
+their reconciler starts (poolmgrd startup, `CreatePool`, `UpdatePool`).
 
 ## No per-VM/host attribution in the `PoolAdmin` API
 
@@ -24,7 +50,9 @@ static one, or wait for upstream to support per-VM template variation.
 `available_count`/`leased_count`/`provisioning_count`/`quarantined_count`) — there's no RPC that
 returns the pool's individual `VMRecord`s (which host each VM landed on, its uid, its phase).
 `ClaimVM`'s response does return one VM's `host` once it's claimed, but there's no way to inspect
-placement across a pool's VMs without claiming all of them. Any placement-style assertion has to
+placement across a pool's VMs without claiming all of them. `Lease.ListLeases` (v0.2.0) now
+lists a pool's live leases (`LeaseRecord`: lease id, VM uid, timestamps), which the suite uses
+to assert release/expiry directly, but it only covers leased VMs and still carries no host. Any placement-style assertion has to
 fall back to the same SSH ground-truth technique `tests/test_placement.py` already uses against
 each flintlock host's own `/var/lib/flintlock/vm/` state, rather than the battery API.
 
@@ -32,7 +60,8 @@ each flintlock host's own `/var/lib/flintlock/vm/` state, rather than the batter
 
 `docs/runbooks/e2e-manual-verification.md` (in the battery repo) states `cmd/poolmgrd/main.go`
 "never constructs or runs `reconciler.Sweeper`" and marks lease expiry (step 9) blocked. Reading
-`main.go` directly at `v0.1.0` shows this is stale: `reconciler.NewSweeper(...)` is constructed
+`main.go` directly (at `v0.1.0`, and still at `v0.3.2`, where the runbook is unchanged on this
+point) shows this is stale: `reconciler.NewSweeper(...)` is constructed
 and run alongside the API/metrics servers. `tests/battery/test_lease_expiry.py` exercises it.
 Re-check this doc's accuracy whenever bumping `BATTERY_REF`.
 
@@ -145,3 +174,11 @@ tails) to disambiguate.
 
 Re-run `tests/battery/` once a `FLINTLOCK_REF` newer than v0.15.1 is available, or investigate
 directly why this run's last pool never reported success or failure in time.
+
+**Update (battery v0.3.2):** there are two battery-side reasons every pool could stall before
+reaching `AVAILABLE`, independent of the flintlock history above. Pools weren't seeded before
+v0.3.2, and on v0.3.1+ the long pool names overflowed the socket path. Both are covered in their
+own sections above and fixed or worked around here. Neither has been re-run on real infra yet, so
+the flintlock issues above may not be the whole story. Re-run `tests/battery/` on
+`BATTERY_REF=v0.3.2` + `FLINTLOCK_REF=v0.15.1` before drawing further conclusions about
+flintlock#1200.
