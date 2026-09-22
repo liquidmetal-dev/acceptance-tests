@@ -16,8 +16,7 @@ from liquidmetal_at.battery.spec import build_pool_spec
 
 @pytest.mark.e2e
 def test_pool_lifecycle(config, battery_client, poolmgrd_node, hosts, vm_index):
-    # No run_id prefix: the namespace already isolates the run, and the pool name is
-    # part of a length-limited socket path (see battery/spec.py).
+    # No run_id prefix needed: the namespace already isolates the run.
     pool_name = "pool-lifecycle"
     flintlock_hosts = [f"host-{i}" for i in range(len(hosts.droplets))]
 

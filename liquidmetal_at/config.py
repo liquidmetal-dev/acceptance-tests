@@ -8,6 +8,7 @@ namespace so a run is fully isolated and cleanable.
 from __future__ import annotations
 
 import os
+import re
 import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -158,6 +159,18 @@ def _validate_microvm_shape(mem_mb: int, vcpu: int, kernel_filename: str) -> Non
         raise ConfigError(f"MICROVM_VCPU={vcpu} out of range; flintlock requires 1-64")
     if not kernel_filename:
         raise ConfigError("MICROVM_KERNEL_FILENAME is required by flintlock (e.g. boot/vmlinux)")
+
+
+_SEMVER_TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)")
+
+
+def flintlock_ref_below(ref: str, minimum: str) -> bool:
+    """True if ``ref`` is a semver tag older than ``minimum``; non-tag refs (main, SHAs) are
+    assumed new enough."""
+    m, floor = _SEMVER_TAG.match(ref), _SEMVER_TAG.match(minimum)
+    if not m or not floor:
+        return False
+    return tuple(map(int, m.groups())) < tuple(map(int, floor.groups()))
 
 
 _PROVIDERS = ("firecracker", "cloudhypervisor")

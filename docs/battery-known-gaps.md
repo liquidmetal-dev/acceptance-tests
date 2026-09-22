@@ -19,19 +19,22 @@ battery pool with `size > 1`: every VM in the pool would get the identical stati
 scenario needs `size > 1`, either use a template with a DHCP/MMDS-based address instead of a
 static one, or wait for upstream to support per-VM address variation.
 
-## Pool name + namespace must fit the guest-agent vsock socket path (battery#94)
+## Guest-agent socket path overflowed `sun_path` before flintlock v0.15.2 (resolved)
 
-The v0.3.1 generated id becomes a directory in flintlock's guest-agent socket path,
-`/var/lib/flintlock/vm/<namespace>/<pool-name>-xxxxxxxx/<26-char ULID>/guest-agent.vsock`, which
-Linux caps at 107 usable bytes (`sun_path`). That leaves **30 bytes** for `namespace` + pool
-name combined. Upstream doesn't validate this: `CreatePool` accepts an over-long pool, and every
-VM then fails after `CreateMicroVM` succeeds, with `connect: invalid argument`.
+Since battery v0.3.1 each VM's flintlock id is `<pool-name>-<8 hex>`. Before flintlock v0.15.2
+that id was part of the guest-agent socket path,
+`/var/lib/flintlock/vm/<namespace>/<pool-name>-xxxxxxxx/<26-char ULID>/guest-agent.vsock`. Linux
+caps that path at 107 usable bytes (`sun_path`), which left only 30 bytes for namespace + pool
+name. Nothing validated it: `CreatePool` accepted the pool, and every VM then failed after
+`CreateMicroVM` succeeded, with `connect: invalid argument`. This suite's old
+`<run_id>-pool-<x>` names in namespace `<run_id>` came to about 114 bytes. Filed as
+https://github.com/liquidmetal-dev/battery/issues/94.
 
-This suite used to name pools `<run_id>-pool-<x>` in namespace `<run_id>` (`at-xxxxxxxx`),
-which came to about 114 bytes — over the limit for every test. Pools are now named `pool-<x>`
-(the namespace already isolates the run), and `battery/spec.py::build_pool_spec` raises
-`ValueError` offline for anything over the limit, including a long `MICROVM_NAMESPACE`
-override. Filed upstream: https://github.com/liquidmetal-dev/battery/issues/94.
+Fixed on the flintlock side in v0.15.2 (flintlock#1227, fixes flintlock#1226): per-VM sockets now
+live at `<socket-dir>/<uid>/` (default `/run/flintlock/<uid>/guest-agent.vsock`, 49 bytes), so
+their length no longer depends on namespace or name. `tests/battery/conftest.py` stops the run up
+front if `FLINTLOCK_REF` is a release tag older than v0.15.2. Pools are still named `pool-<x>`,
+because the namespace already isolates each run.
 
 ## Event-driven pools were never seeded before v0.3.2
 
@@ -177,8 +180,8 @@ directly why this run's last pool never reported success or failure in time.
 
 **Update (battery v0.3.2):** there are two battery-side reasons every pool could stall before
 reaching `AVAILABLE`, independent of the flintlock history above. Pools weren't seeded before
-v0.3.2, and on v0.3.1+ the long pool names overflowed the socket path. Both are covered in their
-own sections above and fixed or worked around here. Neither has been re-run on real infra yet, so
+v0.3.2, and before flintlock v0.15.2 battery v0.3.1+'s VM ids overflowed the socket path. Both
+are covered in their own sections above and are fixed upstream. Neither has been re-run on real infra yet, so
 the flintlock issues above may not be the whole story. Re-run `tests/battery/` on
-`BATTERY_REF=v0.3.2` + `FLINTLOCK_REF=v0.15.1` before drawing further conclusions about
+`BATTERY_REF=v0.3.2` + `FLINTLOCK_REF=v0.15.2` before drawing further conclusions about
 flintlock#1200.

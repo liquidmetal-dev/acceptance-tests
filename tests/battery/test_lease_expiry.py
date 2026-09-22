@@ -16,8 +16,7 @@ from liquidmetal_at.waiter import wait_until
 
 @pytest.mark.e2e
 def test_lease_expiry_deletes_and_replenishes(config, battery_client, hosts, vm_index):
-    # No run_id prefix: the namespace already isolates the run, and the pool name is
-    # part of a length-limited socket path (see battery/spec.py).
+    # No run_id prefix needed: the namespace already isolates the run.
     pool_name = "pool-expiry"
     flintlock_hosts = [f"host-{i}" for i in range(len(hosts.droplets))]
 

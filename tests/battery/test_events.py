@@ -58,8 +58,7 @@ def _subsequence_present(haystack: list[int], needle: list[int]) -> bool:
 
 @pytest.mark.e2e
 def test_events_subsequence(config, battery_client, hosts, vm_index):
-    # No run_id prefix: the namespace already isolates the run, and the pool name is
-    # part of a length-limited socket path (see battery/spec.py).
+    # No run_id prefix needed: the namespace already isolates the run.
     pool_name = "pool-events"
     flintlock_hosts = [f"host-{i}" for i in range(len(hosts.droplets))]
     events, stop = _drain_events_in_background(

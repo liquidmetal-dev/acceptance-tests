@@ -6,7 +6,6 @@ that mutates its own state on delete, proving ``destroy_by_tag`` is safe to call
 """
 from __future__ import annotations
 
-import dataclasses
 import types
 
 import pytest
@@ -492,27 +491,13 @@ def test_provision_host_installs_vsock_connect(tmp_path):
     assert "install -m0755 \"$GA_BIN\" /usr/local/bin/vsock-connect" in host_sh
 
 
-def test_battery_pool_spec_rejects_overlong_vsock_path(tmp_path):
-    """battery v0.3.1+ puts the pool name in the guest-agent vsock socket path; an over-long
-    name must fail offline rather than as 'connect: invalid argument' on every VM."""
-    from liquidmetal_at.battery.spec import build_pool_spec, guest_agent_vsock_path_len
 
-    cfg = _dummy_config(tmp_path)
-    ns = cfg.microvm_namespace
-    for name in ("pool-lifecycle", "pool-claim", "pool-events", "pool-expiry"):
-        assert guest_agent_vsock_path_len(name, ns) <= 107
-        spec = build_pool_spec(cfg, name, index=0, size=1, flintlock_hosts=["host-0"])
-        assert spec.name == name
+@pytest.mark.parametrize(
+    ("ref", "below"),
+    [("v0.15.1", True), ("v0.14.9", True), ("v0.15.2", False), ("v0.16.0", False),
+     ("v1.0.0", False), ("main", False), ("abc1234", False)],
+)
+def test_flintlock_ref_below(ref, below):
+    from liquidmetal_at.config import flintlock_ref_below
 
-    # The old run_id-prefixed naming overflowed sun_path.
-    assert guest_agent_vsock_path_len(f"{cfg.run_id}-pool-lifecycle", ns) > 107
-    with pytest.raises(ValueError, match="battery/issues/94"):
-        build_pool_spec(
-            cfg, f"{cfg.run_id}-pool-lifecycle", index=0, size=1, flintlock_hosts=["host-0"]
-        )
-
-    # sun_path is a byte limit: a non-ASCII namespace that fits in characters must still fail.
-    wide = dataclasses.replace(cfg, microvm_namespace="é" * 16)
-    assert guest_agent_vsock_path_len("pool-lifecycle", wide.microvm_namespace) == 123
-    with pytest.raises(ValueError, match="battery/issues/94"):
-        build_pool_spec(wide, "pool-lifecycle", index=0, size=1, flintlock_hosts=["host-0"])
+    assert flintlock_ref_below(ref, "v0.15.2") is below
