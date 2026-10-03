@@ -45,6 +45,10 @@ DOCS = "docs/libvirt-backend.md"
 OSINFO = "ubuntu22.04"  # --import cannot detect the OS; virt-install requires it
 LEASE_TIMEOUT = 120  # seconds for a VM to obtain its DHCP lease
 SUBNET_ATTEMPTS = 5
+# Upper bound for any single virsh/virt-install call (the base image upload is the
+# slowest); a hung daemon must fail the run, not stall it until the CI job limit.
+COMMAND_TIMEOUT = 600
+DOWNLOAD_TIMEOUT = 60  # seconds of network silence before the image download gives up
 
 Runner = Callable[[list[str]], str]
 
@@ -54,7 +58,14 @@ class LibvirtError(RuntimeError):
 
 
 def _exec(argv: list[str]) -> str:
-    proc = subprocess.run(argv, capture_output=True, text=True, check=False)
+    try:
+        proc = subprocess.run(
+            argv, capture_output=True, text=True, check=False, timeout=COMMAND_TIMEOUT
+        )
+    except FileNotFoundError as exc:
+        raise LibvirtError(f"{argv[0]} not found on PATH ({DOCS})") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise LibvirtError(f"{' '.join(argv)} timed out after {COMMAND_TIMEOUT}s") from exc
     if proc.returncode != 0:
         raise LibvirtError(
             f"{' '.join(argv)} failed (rc={proc.returncode}): {proc.stderr.strip()}"
@@ -152,7 +163,11 @@ def _download_base(cfg: Config) -> Path:
     os.close(fd)
     try:
         log.info("downloading base image %s", cfg.libvirt_base_image_url)
-        urllib.request.urlretrieve(cfg.libvirt_base_image_url, tmp)
+        with (
+            urllib.request.urlopen(cfg.libvirt_base_image_url, timeout=DOWNLOAD_TIMEOUT) as src,
+            open(tmp, "wb") as dst,
+        ):
+            shutil.copyfileobj(src, dst)
         got = _sha256(Path(tmp))
         if got != want:
             raise LibvirtError(
@@ -376,7 +391,10 @@ def provision(
         if cfg.keep_infra_on_failure:
             log.warning("KEEP_INFRA_ON_FAILURE set - leaving %s up (make clean-libvirt)", cfg.tag)
         else:
-            destroy_run(cfg, run)
+            try:
+                destroy_run(cfg, run)
+            except LibvirtError as exc:  # keep the provisioning error as the one raised
+                log.warning("cleanup after failed provision: %s (make clean-libvirt)", exc)
         raise
     return infra
 
@@ -396,21 +414,33 @@ def _destroy_matching(uri: str, pool: str, match: Callable[[str], bool], run: Ru
     """Remove every domain, non-base volume and network whose name satisfies ``match``.
 
     Order: domains first (they hold the volumes and network open), then volumes, then
-    networks. Safe to call twice.
+    networks. Safe to call twice. A failed removal does not stop the rest: everything
+    that can be removed is, and the failures are raised together at the end.
     """
+    errors: list[str] = []
+
+    def remove(*args: str) -> None:
+        try:
+            _virsh(uri, run, *args)
+        except LibvirtError as exc:
+            log.warning("teardown: %s", exc)
+            errors.append(str(exc))
+
     for dom in _virsh(uri, run, "list", "--all", "--name").split():
         if match(dom):
             _virsh_quiet(uri, run, "destroy", dom)  # fails if not running
-            _virsh(uri, run, "undefine", dom, "--nvram")
+            remove("undefine", dom, "--nvram")
     if pool in _virsh(uri, run, "pool-list", "--name").split():
         _virsh(uri, run, "pool-refresh", pool)  # console logs are created by QEMU, not virsh
         for vol in _volumes(uri, pool, run):
             if match(vol) and not vol.startswith(BASE_PREFIX):
-                _virsh(uri, run, "vol-delete", "--pool", pool, vol)
+                remove("vol-delete", "--pool", pool, vol)
     for net in _virsh(uri, run, "net-list", "--all", "--name").split():
         if match(net):
             _virsh_quiet(uri, run, "net-destroy", net)  # fails if not active
-            _virsh(uri, run, "net-undefine", net)
+            remove("net-undefine", net)
+    if errors:
+        raise LibvirtError("teardown incomplete: " + "; ".join(errors))
 
 
 def _belongs_to(tag: str) -> Callable[[str], bool]:

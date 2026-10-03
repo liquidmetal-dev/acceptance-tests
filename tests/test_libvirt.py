@@ -496,3 +496,40 @@ def test_interrupted_provision_tears_down(ready, fake, monkeypatch):
         libvirt.provision(ready, _user_data, fake)
     assert fake.domains == []
     assert fake.nets == {}
+
+
+# --- hardening ---------------------------------------------------------------
+
+
+def test_teardown_continues_past_a_failed_delete_then_reports_it(tmp_path, fake):
+    # One stuck domain must not strand the run's volumes and network.
+    _seed_two_runs(fake)
+    fake.fail["undefine"] = "domain is busy"
+    with pytest.raises(LibvirtError, match="domain is busy"):
+        libvirt.destroy_run(_cfg(tmp_path, run_id="at-1"), fake)
+    assert "lm-acceptance-at-1" not in fake.nets
+    assert not [v for v in fake.vols if v.startswith("lm-acceptance-at-1-")]
+
+
+def test_failed_cleanup_does_not_mask_the_provisioning_error(ready, fake):
+    fake.fail_install_of = "lm-acceptance-at-1-host1"
+    fake.fail["undefine"] = "domain is busy"
+    with pytest.raises(LibvirtError, match="virt-install failed for lm-acceptance-at-1-host1"):
+        libvirt.provision(ready, _user_data, fake)
+
+
+def test_exec_times_out_a_hung_command(monkeypatch):
+    monkeypatch.setattr(libvirt, "COMMAND_TIMEOUT", 0.2)
+    with pytest.raises(LibvirtError, match="timed out"):
+        libvirt._exec(["sleep", "5"])
+
+
+def test_exec_reports_a_missing_binary_cleanly():
+    with pytest.raises(LibvirtError, match="not found"):
+        libvirt._exec(["lm-acceptance-no-such-binary"])
+
+
+def test_exec_returns_stdout_and_raises_on_nonzero_exit():
+    assert libvirt._exec(["echo", "hi"]) == "hi\n"
+    with pytest.raises(LibvirtError, match="rc=1"):
+        libvirt._exec(["false"])

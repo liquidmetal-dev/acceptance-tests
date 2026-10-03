@@ -198,6 +198,8 @@ def flintlock_ref_below(ref: str, minimum: str) -> bool:
 _PROVIDERS = ("firecracker", "cloudhypervisor")
 _BATTERY_LOG_LEVELS = ("debug", "info", "warn", "error")
 _BACKENDS = ("digitalocean", "libvirt")
+# libvirt names, XML attributes and the guest hostname are all built from the run id.
+_LIBVIRT_RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]*$")
 _SUBNET_PREFIX = re.compile(r"^\d{1,3}\.\d{1,3}$")
 
 
@@ -219,6 +221,11 @@ def load(dotenv_path: str | None = None) -> Config:
 
     subnet_prefix = _env("LIBVIRT_SUBNET_PREFIX") or "10.210"
     if backend == "libvirt":
+        if not _LIBVIRT_RUN_ID.match(run_id):
+            raise ConfigError(
+                f"RUN_ID={run_id!r} invalid for the libvirt backend; use letters, digits, "
+                "'.' and '-' only, starting with a letter or digit"
+            )
         if run_id.startswith("base"):
             raise ConfigError(
                 f"RUN_ID={run_id!r} must not start with 'base' on the libvirt backend "

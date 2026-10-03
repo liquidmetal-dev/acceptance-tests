@@ -216,3 +216,13 @@ def test_libvirt_subnet_prefix_must_be_two_octets(monkeypatch, tmp_path):
     monkeypatch.setenv("LIBVIRT_SUBNET_PREFIX", "10.210.0.0/16")
     with pytest.raises(ConfigError, match="LIBVIRT_SUBNET_PREFIX"):
         load(dotenv_path=empty_env)
+
+
+@pytest.mark.parametrize("run_id", ["has space", "a/b", "quote'd", "-leading-dash", "under_score"])
+def test_libvirt_run_id_must_be_a_safe_name(monkeypatch, tmp_path, run_id):
+    # The run id becomes libvirt domain/network/volume names, XML attributes and a hostname.
+    empty_env = _prime_required(monkeypatch, tmp_path)
+    monkeypatch.setenv("INFRA_BACKEND", "libvirt")
+    monkeypatch.setenv("RUN_ID", run_id)
+    with pytest.raises(ConfigError, match="RUN_ID"):
+        load(dotenv_path=empty_env)
