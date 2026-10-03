@@ -2,7 +2,7 @@
 
 Chain:  config -> infra (provision) -> hosts (bootstrap) -> cluster (mesh gate) ->
 fl_client (gRPC to brigade). Teardown is registered on the infra fixture so a failure
-in any later phase still reaps DigitalOcean resources. Set KEEP_INFRA_ON_FAILURE=true
+in any later phase still reaps the run's infrastructure. Set KEEP_INFRA_ON_FAILURE=true
 to leave infra up for debugging when a test fails.
 """
 from __future__ import annotations
@@ -14,12 +14,11 @@ import os
 import pytest
 
 from liquidmetal_at import config as config_mod
-from liquidmetal_at import logs
 from liquidmetal_at.bootstrap import cloudinit
 from liquidmetal_at.bootstrap.brigade_cluster import wait_for_cluster
 from liquidmetal_at.bootstrap.host import bootstrap_all
 from liquidmetal_at.flintlock.client import FlintlockClient
-from liquidmetal_at.infra import do
+from liquidmetal_at.infra import backend
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("conftest")
@@ -53,29 +52,13 @@ def config() -> config_mod.Config:
 
 @pytest.fixture(scope="session")
 def infra(request, config):
-    """Provision DO infra; always tear down (unless KEEP_INFRA_ON_FAILURE + failures)."""
-    provisioned = do.provision(
-        config, user_data_for=lambda i, name: cloudinit.user_data(config, i, name)
-    )
-    yield provisioned
-
-    failed = request.session.testsfailed > 0
-    if failed:
-        # Capture host logs + mesh diagnostics before any keep/destroy decision, so a
-        # failed run is analyzable from artifacts/ even when infra is left up. Never let a
-        # collection error leak infra by skipping the teardown below.
-        try:
-            logs.collect(config, provisioned)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("log collection failed: %s", exc)
-    if failed and config.keep_infra_on_failure:
-        log.warning(
-            "KEEP_INFRA_ON_FAILURE set and tests failed - leaving infra tag=%s up. "
-            "Reap later with: make clean-tags",
-            config.tag,
-        )
-        return
-    do.destroy_by_tag(config, provisioned.client)
+    """Provision infra; always tear down (unless KEEP_INFRA_ON_FAILURE + failures)."""
+    with backend.provisioned_infra(
+        config,
+        lambda i, name: cloudinit.user_data(config, i, name),
+        failed=lambda: request.session.testsfailed > 0,
+    ) as provisioned:
+        yield provisioned
 
 
 @pytest.fixture(scope="session")
