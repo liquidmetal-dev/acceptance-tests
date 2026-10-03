@@ -7,8 +7,8 @@ cloud-init) listens on that vsock (control port 1024); the host drives it with t
 ``vsock-connect`` CLI.
 
 vsock is host-local, so the runner cannot reach guest CID 3 directly — the per-VM UDS only
-exists on the droplet actually running the VM. So we read ``vsock_path`` back through brigade
-(which forwards GetMicroVM to that host verbatim), find which droplet holds the socket, and run
+exists on the node actually running the VM. So we read ``vsock_path`` back through brigade
+(which forwards GetMicroVM to that host verbatim), find which node holds the socket, and run
 ``vsock-connect exec`` there over SSH. This proves the vsock control channel end to end — a
 different path than :mod:`tests.test_ssh_reachability`, which reaches the guest over the network.
 
@@ -50,10 +50,10 @@ def _wait_vsock_path(fl_client, uid: str, *, timeout: float) -> str:
 
 
 def _host_with_agent(config, cluster, vsock_path: str):
-    """Return a connected SSH to whichever droplet's guest-agent answers on vsock_path.
+    """Return a connected SSH to whichever node's guest-agent answers on vsock_path.
 
     The UDS is created by flintlockd on the host running the VM, so it exists on exactly one
-    droplet — which host is scheduler-decided. The guest-agent inside the guest only starts
+    node — which host is scheduler-decided. The guest-agent inside the guest only starts
     listening after the guest boots + cloud-init installs it, so ``ping`` can fail for up to a
     minute+; cycle every host under a generous deadline rather than trying each once.
     """
@@ -61,8 +61,8 @@ def _host_with_agent(config, cluster, vsock_path: str):
     deadline = time.monotonic() + config.timeout_vm_create
     last = None
     while True:
-        for droplet in cluster.droplets:
-            ssh = SSH(host=droplet.public_ip, user="root", key_path=config.ssh_private_key_path)
+        for node in cluster.nodes:
+            ssh = SSH(host=node.public_ip, user="root", key_path=config.ssh_private_key_path)
             ssh.connect(timeout=config.timeout_ssh)
             try:
                 rc, _, _ = ssh.run(f"test -S {quoted}", check=False, timeout=15)
@@ -116,7 +116,7 @@ def test_guest_agent_reachable_over_vsock(config, fl_client, cluster, vm_index):
         # Snapshot the guest serial console before delete so a guest-side failure (e.g. missing
         # virtio-vsock, or cloud-init apt install) is diagnosable after teardown. Best-effort.
         try:
-            logs.collect_vm_consoles(config, cluster.droplets, tag="guest-agent-vsock")
+            logs.collect_vm_consoles(config, cluster.nodes, tag="guest-agent-vsock")
         except Exception:  # noqa: BLE001
             pass
         fl_client.delete(uid)

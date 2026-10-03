@@ -80,7 +80,7 @@ def infra(request, config):
 
 @pytest.fixture(scope="session")
 def hosts(config, infra):
-    """Bootstrap flintlock + brigade on all droplets."""
+    """Bootstrap flintlock + brigade on all nodes."""
     bootstrap_all(config, infra)
     return infra
 
@@ -94,8 +94,8 @@ def cluster(config, hosts):
 
 @pytest.fixture(scope="session")
 def brigade_node(cluster):
-    """The droplet whose brigade north edge the client dials."""
-    return cluster.droplets[0]
+    """The node whose brigade north edge the client dials."""
+    return cluster.nodes[0]
 
 
 @pytest.fixture(scope="session")
@@ -105,7 +105,7 @@ def fl_client(request, config, cluster, brigade_node):
     yield client
     # On failure, leave the microVMs in place: deleting removes their
     # /var/lib/flintlock/vm/<uid>/firecracker.log, which logs.collect (run later in the
-    # infra teardown) needs to explain why a guest never reached CREATED. The droplets are
+    # infra teardown) needs to explain why a guest never reached CREATED. The nodes are
     # destroyed wholesale afterwards anyway, so this per-VM tidy only matters on success.
     if not request.session.testsfailed:
         try:

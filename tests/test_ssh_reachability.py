@@ -1,8 +1,8 @@
 """Running microVMs must be reachable by SSH (proving they actually booted + networked).
 
 microVM IPs live on a host's internal bridge net, unreachable from the runner, so we
-ProxyJump through the hosting droplet (bastion) to the VM's deterministic static IP.
-Which host holds a given VM is scheduler-decided, so we try each droplet as bastion.
+ProxyJump through the hosting node (bastion) to the VM's deterministic static IP.
+Which host holds a given VM is scheduler-decided, so we try each node as bastion.
 The guest's hostname (set via cloud-init) must equal the VM id. We then run real in-guest
 commands over that session: ``ls /`` (guest filesystem is live) and ``ping 1.1.1.1`` (outbound
 network works through the host bridge's MASQUERADE NAT) — not just SSH login + hostname.
@@ -29,7 +29,7 @@ log = logging.getLogger("test_ssh")
 
 
 def _ssh_via_any_host(config, cluster, microvm_ip: str):
-    """Reach the guest through whichever droplet hosts it, retrying patiently.
+    """Reach the guest through whichever node hosts it, retrying patiently.
 
     "No route to host" from a bastion means the guest's interface isn't up yet (cloud-init still
     bringing up the static IP + sshd), not that the VM is on another host. On nested virt this can
@@ -39,8 +39,8 @@ def _ssh_via_any_host(config, cluster, microvm_ip: str):
     deadline = time.monotonic() + config.timeout_vm_create
     last_exc = None
     while True:
-        for droplet in cluster.droplets:
-            bastion = SSH(host=droplet.public_ip, user="root", key_path=config.ssh_private_key_path)
+        for node in cluster.nodes:
+            bastion = SSH(host=node.public_ip, user="root", key_path=config.ssh_private_key_path)
             bastion.connect(timeout=config.timeout_ssh)
             try:
                 vm = ssh_to_microvm(
@@ -94,7 +94,7 @@ def test_microvms_reachable_by_ssh(config, fl_client, cluster, vm_index):
         # BEFORE deleting the VMs — otherwise the evidence for why a guest didn't network-boot is
         # gone by the time the session-scoped log collector runs at teardown. Best-effort.
         try:
-            logs.collect_vm_consoles(config, cluster.droplets, tag="ssh-reachability")
+            logs.collect_vm_consoles(config, cluster.nodes, tag="ssh-reachability")
         except Exception:  # noqa: BLE001
             pass
         for _, uid in vms:

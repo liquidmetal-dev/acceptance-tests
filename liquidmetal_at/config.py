@@ -97,7 +97,7 @@ class Config:
     keep_infra_on_failure: bool
     artifacts_dir: str
 
-    droplet_count: int = 2
+    node_count: int = 2
 
     # hypervisor provider (firecracker | cloudhypervisor). Cloud Hypervisor often
     # needs a PVH-capable kernel, so allow per-provider kernel overrides that fall
@@ -270,7 +270,7 @@ def load(dotenv_path: str | None = None) -> Config:
         timeout_pool_available=int(os.environ.get("TIMEOUT_POOL_AVAILABLE", "300")),
         keep_infra_on_failure=_bool(os.environ.get("KEEP_INFRA_ON_FAILURE", "false")),
         artifacts_dir=_expand(os.environ.get("ARTIFACTS_DIR", "./artifacts")),
-        droplet_count=node_count,
+        node_count=node_count,
         microvm_provider=provider,
         microvm_ch_kernel_image=_env("MICROVM_CH_KERNEL_IMAGE"),
         microvm_ch_kernel_filename=_env("MICROVM_CH_KERNEL_FILENAME"),

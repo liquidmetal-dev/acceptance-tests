@@ -8,8 +8,14 @@ export DEBIAN_FRONTEND=noninteractive
 
 FLINTLOCK_DIR=/opt/flintlock
 THINPOOL={{ thinpool }}
-DISK={{ disk }}
+{% if parent_iface %}
 PARENT_IFACE={{ parent_iface }}
+{% else %}
+# Single-NIC hosts (libvirt backend): flintlockd only uses the parent interface for
+# macvtap guests; ours attach to the bridge, so the default-route interface is enough.
+PARENT_IFACE=$(ip route show default | awk '/default/{print $5; exit}')
+test -n "$PARENT_IFACE" || { echo "FATAL: no default-route interface for --parent-iface"; exit 1; }
+{% endif %}
 GRPC_PORT={{ flintlock_grpc_port }}
 
 echo "== waiting for base cloud-init marker =="

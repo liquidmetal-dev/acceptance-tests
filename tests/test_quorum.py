@@ -24,8 +24,8 @@ from liquidmetal_at.waiter import wait_until
 log = logging.getLogger("test_quorum")
 
 
-def _brigade(config, droplet, action: str) -> None:
-    ssh = SSH(host=droplet.public_ip, user="root", key_path=config.ssh_private_key_path)
+def _brigade(config, node, action: str) -> None:
+    ssh = SSH(host=node.public_ip, user="root", key_path=config.ssh_private_key_path)
     ssh.connect(timeout=config.timeout_ssh)
     try:
         ssh.sudo(f"systemctl {action} brigade")
@@ -35,10 +35,10 @@ def _brigade(config, droplet, action: str) -> None:
 
 @pytest.mark.e2e
 def test_quorum_gates_placement(config, fl_client, cluster, vm_index):
-    if config.brigade_min_cluster_size < 2 or len(cluster.droplets) < 2:
+    if config.brigade_min_cluster_size < 2 or len(cluster.nodes) < 2:
         pytest.skip("quorum test requires min_cluster_size>=2 and 2 nodes")
 
-    node_a, node_b = cluster.droplets[0], cluster.droplets[1]
+    node_a, node_b = cluster.nodes[0], cluster.nodes[1]
 
     # Break quorum: stop brigade on node B.
     _brigade(config, node_b, "stop")

@@ -248,7 +248,6 @@ def test_renders_are_valid():
     host_sh = render(
         "provision_host.sh.j2",
         thinpool="tp",
-        disk="/dev/sda",
         parent_iface="eth1",
         bridge_name="flintlock0",
         bridge_addr="192.168.100.1/24",
@@ -477,7 +476,6 @@ def test_provision_host_installs_vsock_connect(tmp_path):
     host_sh = render(
         "provision_host.sh.j2",
         thinpool="tp",
-        disk="/dev/sda",
         parent_iface="eth1",
         bridge_name="flintlock0",
         bridge_addr="192.168.100.1/24",

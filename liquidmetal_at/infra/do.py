@@ -16,34 +16,22 @@ from pydo import Client
 
 from ..config import Config
 from ..waiter import retry_call, wait_until
+from .types import EPMD_PORT, ERLANG_DIST_HIGH, ERLANG_DIST_LOW, GOSSIP_UDP_PORT, Infra, Node
 
 log = logging.getLogger("infra")
 
-# Erlang distribution port range opened between droplets for the brigade mesh.
-ERLANG_DIST_LOW = 9100
-ERLANG_DIST_HIGH = 9200
-EPMD_PORT = 4369
-GOSSIP_UDP_PORT = 45892
+# DO private-network interface inside the VPC; flintlockd's --parent-iface on droplets.
+PARENT_IFACE = "eth1"
 
 
 @dataclass
-class Droplet:
-    id: int
-    name: str
-    public_ip: str
-    private_ip: str
-
-
-@dataclass
-class Infra:
-    cfg: Config
-    client: Client
-    ssh_key_id: int
-    vpc_id: str
-    vpc_cidr: str
-    firewall_id: str
+class DOInfra(Infra):
+    client: Client | None = None
+    ssh_key_id: int = 0
+    vpc_id: str = ""
+    vpc_cidr: str = ""
+    firewall_id: str = ""
     volume_ids: list[str] = field(default_factory=list)
-    droplets: list[Droplet] = field(default_factory=list)
 
 
 def client(cfg: Config) -> Client:
@@ -119,7 +107,7 @@ def _create_droplet(
     return c.droplets.create(body=body)["droplet"]["id"]
 
 
-def _droplet_ready(c: Client, droplet_id: int) -> Droplet | None:
+def _droplet_ready(c: Client, droplet_id: int) -> Node | None:
     d = c.droplets.get(droplet_id=droplet_id)["droplet"]
     if d.get("status") != "active":
         return None
@@ -130,7 +118,7 @@ def _droplet_ready(c: Client, droplet_id: int) -> Droplet | None:
         elif net.get("type") == "private":
             priv = net["ip_address"]
     if pub and priv:
-        return Droplet(id=droplet_id, name=d["name"], public_ip=pub, private_ip=priv)
+        return Node(name=d["name"], public_ip=pub, private_ip=priv, parent_iface=PARENT_IFACE)
     return None
 
 
@@ -179,7 +167,7 @@ def _create_firewall(c: Client, cfg: Config) -> str:
 # --- public API ------------------------------------------------------------
 
 
-def provision(cfg: Config, user_data_for: callable) -> Infra:
+def provision(cfg: Config, user_data_for: callable) -> DOInfra:
     """Provision all infra for a run. ``user_data_for(index, name)`` -> cloud-init str."""
     c = client(cfg)
     log.info("provisioning DO infra tag=%s region=%s", cfg.tag, cfg.do_region)
@@ -189,7 +177,7 @@ def provision(cfg: Config, user_data_for: callable) -> Infra:
     vpc_id, vpc_cidr = _create_vpc(c, cfg)
     firewall_id = _create_firewall(c, cfg)
 
-    infra = Infra(
+    infra = DOInfra(
         cfg=cfg,
         client=c,
         ssh_key_id=ssh_key_id,
@@ -199,7 +187,7 @@ def provision(cfg: Config, user_data_for: callable) -> Infra:
     )
 
     droplet_ids: list[tuple[int, str]] = []
-    for i in range(cfg.droplet_count):
+    for i in range(cfg.node_count):
         name = f"{cfg.tag}-host{i}"
         vol_id = _create_volume(c, cfg, f"{name}-pool")
         infra.volume_ids.append(vol_id)
@@ -216,7 +204,7 @@ def provision(cfg: Config, user_data_for: callable) -> Infra:
             interval=5,
             description=f"droplet {name} active + IPs",
         )
-        infra.droplets.append(droplet)
+        infra.nodes.append(droplet)
         log.info("droplet %s active pub=%s priv=%s", name, droplet.public_ip, droplet.private_ip)
 
     return infra
