@@ -1,0 +1,106 @@
+name: e2e-libvirt
+
+# Manually triggered end-to-end run against local KVM VMs on a self-hosted bare-metal
+# runner (INFRA_BACKEND=libvirt). No DigitalOcean resources or secrets are involved.
+# See docs/libvirt-backend.md for the runner prerequisites.
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Which suite to run
+        type: choice
+        options: [brigade, battery, both]
+        default: brigade
+      brigade_ref:
+        description: brigade git ref to test
+        default: main
+      flintlock_ref:
+        description: flintlock git ref to test
+        default: main
+      battery_ref:
+        description: battery release tag to test
+        default: v0.3.2
+      node_count:
+        description: Number of flintlock host VMs
+        default: "2"
+      microvm_kernel_image:
+        description: microVM kernel OCI image
+        default: ghcr.io/liquidmetal-dev/firecracker-kernel:5.10-no-acpi
+      microvm_rootfs_image:
+        description: microVM rootfs OCI image
+        default: ghcr.io/liquidmetal-dev/ubuntu:24.04
+      microvm_provider:
+        description: Hypervisor provider (firecracker | cloudhypervisor)
+        default: firecracker
+
+# One run at a time on the box: it holds one 2-node run comfortably, and serial runs are
+# what make the "sweep everything" steps below safe. Separate from the DigitalOcean group
+# so the two never queue behind each other.
+concurrency:
+  group: e2e-libvirt
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: [self-hosted, linux, x64, kvm]
+    timeout-minutes: 150
+    env:
+      INFRA_BACKEND: libvirt
+      BRIGADE_REF: ${{ inputs.brigade_ref }}
+      FLINTLOCK_REF: ${{ inputs.flintlock_ref }}
+      BATTERY_REF: ${{ inputs.battery_ref }}
+      NODE_COUNT: ${{ inputs.node_count }}
+      MICROVM_KERNEL_IMAGE: ${{ inputs.microvm_kernel_image }}
+      MICROVM_ROOTFS_IMAGE: ${{ inputs.microvm_rootfs_image }}
+      MICROVM_PROVIDER: ${{ inputs.microvm_provider }}
+    steps:
+      - name: Preflight — KVM and libvirt
+        run: |
+          test -e /dev/kvm || { echo "::error::/dev/kvm not present on this runner" >&2; exit 1; }
+          virsh -c qemu:///system version || {
+            echo "::error::cannot reach system libvirt; see docs/libvirt-backend.md" >&2; exit 1; }
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: make venv
+
+      # A cancelled or crashed earlier job can leave VMs behind on this persistent runner.
+      - name: Sweep stale libvirt resources
+        run: make clean-libvirt
+
+      - name: Generate ephemeral SSH keypair
+        run: |
+          # In RUNNER_TEMP, not ~/.ssh: the runner is persistent and this key is per-run.
+          ssh-keygen -t ed25519 -N "" -C "lm-acceptance-${GITHUB_RUN_ID}" -f "${RUNNER_TEMP}/id_ed25519"
+          echo "SSH_PRIVATE_KEY_PATH=${RUNNER_TEMP}/id_ed25519" >> "${GITHUB_ENV}"
+          echo "SSH_PUBLIC_KEY_PATH=${RUNNER_TEMP}/id_ed25519.pub" >> "${GITHUB_ENV}"
+
+      - name: Run brigade suite
+        if: ${{ inputs.suite == 'brigade' || inputs.suite == 'both' }}
+        run: make test
+
+      - name: Run battery suite
+        if: ${{ !cancelled() && (inputs.suite == 'battery' || inputs.suite == 'both') }}
+        run: make test-battery
+
+      - name: Clean up libvirt resources
+        if: always()
+        run: make clean-libvirt
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: artifacts-libvirt-${{ github.run_id }}
+          path: artifacts/**
+          if-no-files-found: ignore

@@ -5,7 +5,8 @@ Guide for coding agents working in this repo. See `README.md` for the full human
 ## Overview
 
 End-to-end acceptance suite for **flintlock** microVM orchestration, running on real
-**DigitalOcean** infrastructure. Two independent suites:
+**DigitalOcean** infrastructure, or on local KVM VMs via libvirt (`INFRA_BACKEND=libvirt`,
+see `docs/libvirt-backend.md`). Two independent suites:
 
 - **brigade** (`tests/`) — a run provisions a VPC + SSH key + 2 droplets (2 flintlock hosts) +
   block volumes + firewall, bootstraps containerd/Firecracker/`flintlockd` and a 2-node
@@ -40,6 +41,8 @@ make proto                               # regenerate gRPC stubs (flintlock + ba
 make refresh-proto                       # re-fetch + revendor upstream flintlock protos
 make refresh-battery-proto               # re-fetch + revendor battery's own protos
 make clean-tags                          # reap leftover at-* / lm-acceptance-* DO resources
+INFRA_BACKEND=libvirt make test          # brigade e2e on local KVM VMs (no DO, no cost)
+make clean-libvirt                       # reap leftover lm-acceptance-* libvirt VMs/networks
 ```
 
 Config is entirely env-driven — see `.env.example` for every knob. `RUN_ID` (auto `at-<hex>`)
@@ -51,7 +54,8 @@ host `journalctl` is always collected to `artifacts/<run_id>/`.
 ```
 liquidmetal_at/
   config.py            env → Config, RUN_ID, validation
-  infra/               DigitalOcean provisioning (do.py) + teardown (reaper.py)
+  infra/               backends: DigitalOcean (do.py + reaper.py), libvirt (libvirt.py);
+                       backend.py selects
   bootstrap/           host + brigade + battery bootstrap, Jinja2 templates/
   flintlock/           gRPC client + generated stubs (gen/, shared with battery/)
   battery/             gRPC client to poolmgrd (PoolAdmin/Lease/Events) + PoolSpec builder

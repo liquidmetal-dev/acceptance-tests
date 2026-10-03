@@ -18,6 +18,9 @@ Each run:
 > **Nested virtualization:** flintlock needs `/dev/kvm`. DigitalOcean Basic droplets expose
 > nested virt (as of 2026) but performance is poor — timeouts are sized generously.
 
+> **No DigitalOcean account?** Set `INFRA_BACKEND=libvirt` to run the same suites against
+> local KVM VMs on a bare-metal Linux machine. See [docs/libvirt-backend.md](docs/libvirt-backend.md).
+
 ## Layout
 
 ```
@@ -131,6 +134,7 @@ Teardown is automatic. If a run is killed, reap leftovers:
 
 ```bash
 make clean-tags           # deletes all lm-acceptance-* tagged DO resources
+make clean-libvirt        # deletes all lm-acceptance-* libvirt VMs, networks and overlays
 ```
 
 Set `KEEP_INFRA_ON_FAILURE=true` to leave infra up for debugging when a test fails; host
