@@ -358,3 +358,106 @@ def test_collect_consoles_saves_this_runs_logs(tmp_path, fake):
 def test_collect_consoles_never_raises(tmp_path, fake):
     fake.fail["pool-list"] = "daemon gone"
     libvirt.collect_consoles(_cfg(tmp_path), fake)  # best effort
+
+
+# --- network / VMs / provision -----------------------------------------------
+
+
+def _user_data(index, name):
+    return f"#cloud-config\n# {name}\n"
+
+
+@pytest.fixture
+def ready(monkeypatch, tmp_path, fake, host_ok):
+    """A host where provision() can run end to end against the fake."""
+    url, sha = _image(tmp_path, monkeypatch)
+    monkeypatch.setattr(libvirt, "_wait_ssh", lambda cfg, ip: None)
+    return _cfg(tmp_path, libvirt_base_image_url=url, libvirt_base_image_sha256=sha)
+
+
+def test_network_xml_pins_each_node_to_a_fixed_address(tmp_path):
+    xml = libvirt.network_xml(_cfg(tmp_path), "10.210.7")
+    root = ET.fromstring(xml)
+    assert root.findtext("name") == "lm-acceptance-at-1"
+    assert root.find("forward").get("mode") == "nat"
+    assert root.find("ip").get("address") == "10.210.7.1"
+    hosts = [(h.get("name"), h.get("ip"), h.get("mac")) for h in root.iter("host")]
+    assert hosts == [
+        ("lm-acceptance-at-1-host0", "10.210.7.10", "52:54:00:d2:07:0a"),
+        ("lm-acceptance-at-1-host1", "10.210.7.11", "52:54:00:d2:07:0b"),
+    ]
+
+
+def test_pick_subnet_skips_used(tmp_path, fake):
+    fake.nets = {"default": "192.168.122.1", "a": "10.210.0.1", "b": "10.210.1.1"}
+    assert libvirt.pick_subnet(_cfg(tmp_path), fake) == "10.210.2"
+
+
+def test_create_network_moves_on_when_start_fails(tmp_path, fake):
+    # 10.210.0.1 is taken by something libvirt doesn't know about (or a concurrent run).
+    fake.busy_gateways = {"10.210.0.1"}
+    subnet = libvirt.create_network(_cfg(tmp_path), fake)
+    assert subnet == "10.210.1"
+    assert fake.nets == {"lm-acceptance-at-1": "10.210.1.1"}
+
+
+def test_provision_returns_nodes_on_fixed_addresses(ready, fake):
+    infra = libvirt.provision(ready, _user_data, fake)
+    assert [(n.name, n.public_ip, n.private_ip, n.parent_iface) for n in infra.nodes] == [
+        ("lm-acceptance-at-1-host0", "10.210.0.10", "10.210.0.10", None),
+        ("lm-acceptance-at-1-host1", "10.210.0.11", "10.210.0.11", None),
+    ]
+    assert fake.domains == ["lm-acceptance-at-1-host0", "lm-acceptance-at-1-host1"]
+    assert infra.cfg is ready
+
+
+def test_virt_install_arguments(ready, fake):
+    libvirt.provision(ready, _user_data, fake)
+    argv = fake.ran("virt-install")[0]
+
+    def opt(flag):
+        return argv[argv.index(flag) + 1]
+
+    assert opt("--connect") == URI
+    assert opt("--memory") == "8192" and opt("--vcpus") == "4"
+    assert opt("--cpu") == "host-passthrough"
+    assert opt("--osinfo") == "ubuntu22.04"
+    assert opt("--disk") == "vol=lm-acceptance/lm-acceptance-at-1-host0.qcow2,bus=virtio"
+    assert opt("--network") == "network=lm-acceptance-at-1,mac=52:54:00:d2:00:0a,model=virtio"
+    assert opt("--serial") == "file,path=/pool/lm-acceptance/lm-acceptance-at-1-host0-console.log"
+    assert opt("--cloud-init").startswith("user-data=")
+    assert "--import" in argv and "--noautoconsole" in argv
+
+
+def test_overlay_is_backed_by_the_base_image(ready, fake):
+    libvirt.provision(ready, _user_data, fake)
+    create = [c for c in fake.ran("vol-create-as") if c[5].endswith("host0.qcow2")][0]
+    assert create[6] == "50G"
+    assert create[create.index("--backing-vol") + 1] == libvirt.base_volume_name(ready)
+
+
+def test_no_dhcp_lease_fails_fast_with_firewall_hint(ready, fake, monkeypatch):
+    fake.leases = ""  # the bridge's DHCP never answers
+    monkeypatch.setattr(libvirt, "LEASE_TIMEOUT", 0)
+    with pytest.raises(LibvirtError, match="firewall_backend"):
+        libvirt.provision(ready, _user_data, fake)
+
+
+def test_failed_provision_tears_down_and_keeps_console(ready, fake):
+    fake.fail_install_of = "lm-acceptance-at-1-host1"
+    fake.vols.append("lm-acceptance-at-1-host0-console.log")  # QEMU wrote host0's console
+    with pytest.raises(LibvirtError, match="host1"):
+        libvirt.provision(ready, _user_data, fake)
+
+    assert fake.domains == []
+    assert fake.nets == {}
+    assert fake.vols == [libvirt.base_volume_name(ready)]
+    assert (Path(ready.artifacts_dir) / "at-1" / "host0-console.log").is_file()
+
+
+def test_failed_provision_keeps_infra_when_asked(ready, fake):
+    cfg = dataclasses.replace(ready, keep_infra_on_failure=True)
+    fake.fail_install_of = "lm-acceptance-at-1-host1"
+    with pytest.raises(LibvirtError):
+        libvirt.provision(cfg, _user_data, fake)
+    assert fake.domains == ["lm-acceptance-at-1-host0"]

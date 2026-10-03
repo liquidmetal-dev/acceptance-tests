@@ -24,6 +24,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from ..config import DEFAULT_LIBVIRT_POOL, DEFAULT_LIBVIRT_URI, Config
+from ..remote.ssh import SSH
+from ..waiter import WaitTimeout, wait_until
+from .types import Infra, Node
 
 log = logging.getLogger("infra.libvirt")
 
@@ -38,6 +41,9 @@ NESTED_PARAMS = (
     Path("/sys/module/kvm_amd/parameters/nested"),
 )
 DOCS = "docs/libvirt-backend.md"
+OSINFO = "ubuntu22.04"  # --import cannot detect the OS; virt-install requires it
+LEASE_TIMEOUT = 120  # seconds for a VM to obtain its DHCP lease
+SUBNET_ATTEMPTS = 5
 
 Runner = Callable[[list[str]], str]
 
@@ -174,6 +180,187 @@ def ensure_base_image(cfg: Config, run: Runner = _exec) -> str:
         _virsh(uri, run, "vol-delete", "--pool", pool, name)
         raise
     return name
+
+
+# --- network -----------------------------------------------------------------
+
+
+def node_name(cfg: Config, index: int) -> str:
+    return f"{cfg.tag}-host{index}"
+
+
+def _ip_for(subnet: str, index: int) -> str:
+    return f"{subnet}.{10 + index}"
+
+
+def _mac_for(subnet: str, index: int) -> str:
+    """Stable MAC per (subnet, node) so the DHCP host entry pins the address."""
+    third = int(subnet.rsplit(".", 1)[1])
+    return f"52:54:00:d2:{third:02x}:{10 + index:02x}"
+
+
+def network_xml(cfg: Config, subnet: str) -> str:
+    """NAT network ``<subnet>.0/24`` with a fixed DHCP lease per node."""
+    hosts = "\n".join(
+        f"      <host mac='{_mac_for(subnet, i)}' name='{node_name(cfg, i)}' "
+        f"ip='{_ip_for(subnet, i)}'/>"
+        for i in range(cfg.node_count)
+    )
+    return (
+        "<network>\n"
+        f"  <name>{cfg.tag}</name>\n"
+        "  <forward mode='nat'/>\n"
+        f"  <ip address='{subnet}.1' netmask='255.255.255.0'>\n"
+        "    <dhcp>\n"
+        f"      <range start='{subnet}.100' end='{subnet}.200'/>\n"
+        f"{hosts}\n"
+        "    </dhcp>\n"
+        "  </ip>\n"
+        "</network>\n"
+    )
+
+
+def _used_subnets(cfg: Config, run: Runner) -> set[str]:
+    used: set[str] = set()
+    for net in _virsh(cfg.libvirt_uri, run, "net-list", "--all", "--name").split():
+        xml = _virsh(cfg.libvirt_uri, run, "net-dumpxml", net)
+        for ip in ET.fromstring(xml).findall("ip"):
+            used.add(ip.get("address", "").rsplit(".", 1)[0])
+    return used
+
+
+def pick_subnet(cfg: Config, run: Runner, skip: frozenset[str] = frozenset()) -> str:
+    """First ``<prefix>.N`` (a /24) no libvirt network uses and that isn't in ``skip``."""
+    used = _used_subnets(cfg, run) | skip
+    for n in range(256):
+        candidate = f"{cfg.libvirt_subnet_prefix}.{n}"
+        if candidate not in used:
+            return candidate
+    raise LibvirtError(f"no free /24 under {cfg.libvirt_subnet_prefix}.0.0/16")
+
+
+def create_network(cfg: Config, run: Runner = _exec) -> str:
+    """Define + start this run's NAT network; return its subnet (``a.b.c``).
+
+    Starting can fail when the range is in use by something libvirt doesn't list (a
+    concurrent run that picked it first, a VPN); move on to the next free range.
+    """
+    uri = cfg.libvirt_uri
+    tried: set[str] = set()
+    last: LibvirtError | None = None
+    for _ in range(SUBNET_ATTEMPTS):
+        subnet = pick_subnet(cfg, run, frozenset(tried))
+        tried.add(subnet)
+        with tempfile.NamedTemporaryFile("w", suffix=".xml") as fh:
+            fh.write(network_xml(cfg, subnet))
+            fh.flush()
+            _virsh(uri, run, "net-define", fh.name)
+        try:
+            _virsh(uri, run, "net-start", cfg.tag)
+        except LibvirtError as exc:
+            log.warning("subnet %s.0/24 unusable (%s); trying the next one", subnet, exc)
+            last = exc
+            _virsh(uri, run, "net-undefine", cfg.tag)
+            continue
+        log.info("created network %s on %s.0/24", cfg.tag, subnet)
+        return subnet
+    raise LibvirtError(f"could not start network {cfg.tag}: {last}")
+
+
+# --- VMs ---------------------------------------------------------------------
+
+
+def _create_vm(
+    cfg: Config, run: Runner, index: int, subnet: str, base: str, pool_dir: str, user_data: str
+) -> Node:
+    uri, pool = cfg.libvirt_uri, cfg.libvirt_pool
+    name = node_name(cfg, index)
+    _virsh(
+        uri, run, "vol-create-as", pool, f"{name}.qcow2", f"{cfg.libvirt_disk_gb}G",
+        "--format", "qcow2", "--backing-vol", base, "--backing-vol-format", "qcow2",
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        ud, md = Path(tmp) / "user-data", Path(tmp) / "meta-data"
+        ud.write_text(user_data)
+        md.write_text(f"instance-id: {name}\nlocal-hostname: {name}\n")
+        run([
+            "virt-install", "--connect", uri,
+            "--name", name,
+            "--memory", str(cfg.libvirt_memory_mb),
+            "--vcpus", str(cfg.libvirt_vcpus),
+            "--cpu", "host-passthrough",  # exposes svm/vmx so the guest gets /dev/kvm
+            "--import",
+            "--disk", f"vol={pool}/{name}.qcow2,bus=virtio",
+            "--network", f"network={cfg.tag},mac={_mac_for(subnet, index)},model=virtio",
+            "--cloud-init", f"user-data={ud},meta-data={md}",
+            "--serial", f"file,path={pool_dir}/{name}-console.log",
+            "--graphics", "none",
+            "--noautoconsole",
+            "--osinfo", OSINFO,
+        ])
+    ip = _ip_for(subnet, index)
+    log.info("created VM %s at %s", name, ip)
+    return Node(name=name, public_ip=ip, private_ip=ip, parent_iface=None)
+
+
+def _wait_lease(cfg: Config, run: Runner, subnet: str, index: int) -> None:
+    mac = _mac_for(subnet, index)
+    name = node_name(cfg, index)
+    try:
+        wait_until(
+            lambda: mac in _virsh(cfg.libvirt_uri, run, "net-dhcp-leases", cfg.tag),
+            timeout=LEASE_TIMEOUT,
+            interval=3,
+            description=f"DHCP lease for {name}",
+        )
+    except WaitTimeout as exc:
+        raise LibvirtError(
+            f"{name} got no DHCP lease on network {cfg.tag} within {LEASE_TIMEOUT}s. "
+            "A host firewall is probably dropping DHCP/DNS on the libvirt bridge: with ufw "
+            'or another default-deny firewall, set firewall_backend = "iptables" in '
+            f"/etc/libvirt/network.conf and restart libvirt ({DOCS})"
+        ) from exc
+
+
+def _wait_ssh(cfg: Config, ip: str) -> None:
+    ssh = SSH(host=ip, user="root", key_path=cfg.ssh_private_key_path)
+    ssh.connect(timeout=cfg.timeout_provision)
+    ssh.close()
+
+
+# --- public API --------------------------------------------------------------
+
+
+def provision(
+    cfg: Config, user_data_for: Callable[[int, str], str], run: Runner = _exec
+) -> Infra:
+    """Provision all infra for a run. ``user_data_for(index, name)`` -> cloud-init str."""
+    log.info("provisioning libvirt infra %s at %s", cfg.tag, cfg.libvirt_uri)
+    preflight(cfg, run)
+    ensure_pool(cfg, run)
+    base = ensure_base_image(cfg, run)
+    pool_dir = pool_path(cfg, run)
+
+    infra = Infra(cfg=cfg)
+    try:
+        subnet = create_network(cfg, run)
+        for i in range(cfg.node_count):
+            user_data = user_data_for(i, node_name(cfg, i))
+            infra.nodes.append(_create_vm(cfg, run, i, subnet, base, pool_dir, user_data))
+        for i, node in enumerate(infra.nodes):
+            _wait_lease(cfg, run, subnet, i)
+            _wait_ssh(cfg, node.public_ip)
+            log.info("VM %s reachable over SSH", node.name)
+    except Exception:
+        # Unlike DO there is no out-of-band reaper watching this machine, so a failed
+        # provision cleans up after itself — after saving the only evidence there is.
+        collect_consoles(cfg, run)
+        if cfg.keep_infra_on_failure:
+            log.warning("KEEP_INFRA_ON_FAILURE set - leaving %s up (make clean-libvirt)", cfg.tag)
+        else:
+            destroy_run(cfg, run)
+        raise
+    return infra
 
 
 # --- teardown ----------------------------------------------------------------
