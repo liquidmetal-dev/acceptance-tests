@@ -257,7 +257,7 @@ def test_ensure_base_image_downloads_verifies_and_uploads_once(tmp_path, fake, m
 
     name = libvirt.ensure_base_image(cfg, fake)
     assert name == libvirt.base_volume_name(cfg)
-    assert fake.vols == [name]
+    assert fake.vols == [name, f"{name}.ok"]
     assert len(fake.ran("vol-upload")) == 1
 
     libvirt.ensure_base_image(cfg, fake)  # second run reuses the volume
@@ -269,7 +269,7 @@ def test_checksum_mismatch_raises_and_caches_nothing(tmp_path, fake, monkeypatch
     cfg = _cfg(tmp_path, libvirt_base_image_url=url, libvirt_base_image_sha256="0" * 64)
     with pytest.raises(LibvirtError, match="checksum"):
         libvirt.ensure_base_image(cfg, fake)
-    assert list((tmp_path / "cache").iterdir()) == []
+    assert [p.name for p in (tmp_path / "cache").iterdir()] == ["base-image.lock"]
     assert fake.vols == []
 
 
@@ -280,6 +280,28 @@ def test_failed_upload_removes_partial_base_volume(tmp_path, fake, monkeypatch):
     with pytest.raises(LibvirtError, match="connection reset"):
         libvirt.ensure_base_image(cfg, fake)
     assert fake.vols == []
+
+
+def test_interrupted_upload_is_not_trusted(tmp_path, fake, monkeypatch):
+    # A killed run (Ctrl-C, cancelled CI job) can leave a truncated base volume behind.
+    # Without its completion marker it must be replaced, not reused by every later run.
+    url, sha = _image(tmp_path, monkeypatch)
+    cfg = _cfg(tmp_path, libvirt_base_image_url=url, libvirt_base_image_sha256=sha)
+    name = libvirt.base_volume_name(cfg)
+    fake.vols = [name]
+
+    libvirt.ensure_base_image(cfg, fake)
+
+    assert fake.ran("vol-delete")[0][-1] == name
+    assert len(fake.ran("vol-upload")) == 1
+    assert fake.vols == [name, f"{name}.ok"]
+
+
+def test_sweep_keeps_base_image_completion_marker(fake):
+    fake.pools["lm-acceptance"] = True
+    fake.vols = [BASE, f"{BASE}.ok"]
+    libvirt.sweep(URI, "lm-acceptance", fake)
+    assert fake.vols == [BASE, f"{BASE}.ok"]
 
 
 # --- teardown / sweep / consoles ---------------------------------------------
@@ -451,7 +473,8 @@ def test_failed_provision_tears_down_and_keeps_console(ready, fake):
 
     assert fake.domains == []
     assert fake.nets == {}
-    assert fake.vols == [libvirt.base_volume_name(ready)]
+    base = libvirt.base_volume_name(ready)
+    assert fake.vols == [base, f"{base}.ok"]
     assert (Path(ready.artifacts_dir) / "at-1" / "host0-console.log").is_file()
 
 
@@ -461,3 +484,15 @@ def test_failed_provision_keeps_infra_when_asked(ready, fake):
     with pytest.raises(LibvirtError):
         libvirt.provision(cfg, _user_data, fake)
     assert fake.domains == ["lm-acceptance-at-1-host0"]
+
+
+def test_interrupted_provision_tears_down(ready, fake, monkeypatch):
+    # Ctrl-C during the SSH wait: the fixture has not yielded, so nothing else cleans up.
+    def interrupted(cfg, ip):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(libvirt, "_wait_ssh", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        libvirt.provision(ready, _user_data, fake)
+    assert fake.domains == []
+    assert fake.nets == {}

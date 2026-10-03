@@ -35,6 +35,11 @@ def _prime_required(monkeypatch, tmp_path):
     priv.write_text("PRIVATE")
     empty_env = tmp_path / "empty.env"
     empty_env.write_text("")
+    # Isolate from the caller's environment: `INFRA_BACKEND=libvirt make test` runs these too.
+    for var in ("INFRA_BACKEND", "RUN_ID", "LIBVIRT_URI", "LIBVIRT_POOL", "LIBVIRT_VCPUS",
+                "LIBVIRT_MEMORY_MB", "LIBVIRT_DISK_GB", "LIBVIRT_SUBNET_PREFIX",
+                "LIBVIRT_BASE_IMAGE_URL", "LIBVIRT_BASE_IMAGE_SHA256"):
+        monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("DO_API_TOKEN", "dummy-token")
     monkeypatch.setenv("MICROVM_KERNEL_IMAGE", "ghcr.io/example/kernel:5.10")
     monkeypatch.setenv("MICROVM_ROOTFS_IMAGE", "ghcr.io/example/rootfs:1.0")

@@ -8,6 +8,7 @@ is testable without a hypervisor. Every per-run object is named after ``cfg.tag`
 """
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import logging
 import os
@@ -165,20 +166,35 @@ def _download_base(cfg: Config) -> Path:
 
 
 def ensure_base_image(cfg: Config, run: Runner = _exec) -> str:
-    """Make sure the pinned base image exists as a pool volume; return its name."""
+    """Make sure the pinned base image exists as a pool volume; return its name.
+
+    The volume is only trusted once its ``.ok`` marker exists: the marker is created
+    after the upload completes, so a run killed mid-upload (Ctrl-C, cancelled CI job)
+    leaves an unmarked volume that the next run replaces instead of booting from. A
+    file lock keeps two runs starting together from uploading over each other.
+    """
     uri, pool = cfg.libvirt_uri, cfg.libvirt_pool
     name = base_volume_name(cfg)
-    if name in _volumes(uri, pool, run):
-        return name
-    image = _download_base(cfg)
-    log.info("uploading base image into pool %s as %s", pool, name)
-    _virsh(uri, run, "vol-create-as", pool, name, str(image.stat().st_size), "--format", "qcow2")
-    try:
-        _virsh(uri, run, "vol-upload", "--pool", pool, name, str(image))
-    except LibvirtError:
-        # A half-uploaded base would be trusted by every later run; remove it.
-        _virsh(uri, run, "vol-delete", "--pool", pool, name)
-        raise
+    marker = f"{name}.ok"
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    with (CACHE_DIR / "base-image.lock").open("w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        existing = _volumes(uri, pool, run)
+        if name in existing and marker in existing:
+            return name
+        if name in existing:
+            log.warning("base volume %s is incomplete (no %s); replacing it", name, marker)
+            _virsh(uri, run, "vol-delete", "--pool", pool, name)
+        image = _download_base(cfg)
+        log.info("uploading base image into pool %s as %s", pool, name)
+        size = str(image.stat().st_size)
+        _virsh(uri, run, "vol-create-as", pool, name, size, "--format", "qcow2")
+        try:
+            _virsh(uri, run, "vol-upload", "--pool", pool, name, str(image))
+        except LibvirtError:
+            _virsh(uri, run, "vol-delete", "--pool", pool, name)
+            raise
+        _virsh(uri, run, "vol-create-as", pool, marker, "4096", "--format", "raw")
     return name
 
 
@@ -351,9 +367,11 @@ def provision(
             _wait_lease(cfg, run, subnet, i)
             _wait_ssh(cfg, node.public_ip)
             log.info("VM %s reachable over SSH", node.name)
-    except Exception:
+    except BaseException:
         # Unlike DO there is no out-of-band reaper watching this machine, so a failed
         # provision cleans up after itself — after saving the only evidence there is.
+        # BaseException: Ctrl-C or a pytest timeout during the SSH wait must clean up too,
+        # since the fixture has not yielded and pytest will run no teardown.
         collect_consoles(cfg, run)
         if cfg.keep_infra_on_failure:
             log.warning("KEEP_INFRA_ON_FAILURE set - leaving %s up (make clean-libvirt)", cfg.tag)
