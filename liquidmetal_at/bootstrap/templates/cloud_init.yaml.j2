@@ -40,3 +40,13 @@ runcmd:
   - [ bash, -lc, "cd /opt/brigade && /usr/local/bin/mise trust || true; /usr/local/bin/mise install || true" ]
   - [ mkdir, -p, /var/lib/lm-acceptance ]
   - [ bash, -lc, "touch /var/lib/lm-acceptance/base-ready" ]
+{% if root_ssh_key|default('') %}
+
+# libvirt backend only: stock Ubuntu cloud images reject root key login, while every SSH
+# call in the suite is root@host (DigitalOcean injects the key for root itself).
+disable_root: false
+users:
+  - name: root
+    ssh_authorized_keys:
+      - {{ root_ssh_key }}
+{% endif %}

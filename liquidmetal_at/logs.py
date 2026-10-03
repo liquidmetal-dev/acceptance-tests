@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 
 from .config import Config
-from .infra.do import EPMD_PORT, ERLANG_DIST_LOW, Droplet, Infra
+from .infra.types import EPMD_PORT, ERLANG_DIST_LOW, Infra, Node
 from .remote.ssh import SSH
 
 log = logging.getLogger("logs")
@@ -15,7 +15,7 @@ log = logging.getLogger("logs")
 _UNITS = ("flintlockd", "brigade", "battery", "containerd")
 
 
-def _diag_commands(cfg: Config, peers: list[Droplet]) -> list[tuple[str, str]]:
+def _diag_commands(cfg: Config, peers: list[Node]) -> list[tuple[str, str]]:
     """Read-only probes that reveal why the brigade Erlang mesh did or didn't form."""
     cmds = [
         ("listeners", "ss -tlnp"),
@@ -155,7 +155,7 @@ def _diag_commands(cfg: Config, peers: list[Droplet]) -> list[tuple[str, str]]:
     return cmds
 
 
-def collect_vm_consoles(cfg: Config, droplets, tag: str) -> None:
+def collect_vm_consoles(cfg: Config, nodes, tag: str) -> None:
     """Snapshot every live per-VM hypervisor console/log across all hosts, right now.
 
     The session-scoped log collector (`collect`) only runs at teardown — by then a test's
@@ -166,7 +166,7 @@ def collect_vm_consoles(cfg: Config, droplets, tag: str) -> None:
     """
     out = Path(cfg.artifacts_dir) / cfg.run_id
     out.mkdir(parents=True, exist_ok=True)
-    for i, d in enumerate(droplets):
+    for i, d in enumerate(nodes):
         try:
             ssh = SSH(host=d.public_ip, user="root", key_path=cfg.ssh_private_key_path)
             ssh.connect(timeout=30)
@@ -188,7 +188,7 @@ def collect_vm_consoles(cfg: Config, droplets, tag: str) -> None:
 def collect(cfg: Config, infra: Infra) -> None:
     out = Path(cfg.artifacts_dir) / cfg.run_id
     out.mkdir(parents=True, exist_ok=True)
-    for i, d in enumerate(infra.droplets):
+    for i, d in enumerate(infra.nodes):
         try:
             ssh = SSH(host=d.public_ip, user="root", key_path=cfg.ssh_private_key_path)
             ssh.connect(timeout=30)
@@ -198,7 +198,7 @@ def collect(cfg: Config, infra: Infra) -> None:
                 )
                 (out / f"host{i}-{unit}.log").write_text(journal)
 
-            peers = [p for p in infra.droplets if p.private_ip != d.private_ip]
+            peers = [p for p in infra.nodes if p.private_ip != d.private_ip]
             blocks = []
             for name, cmd in _diag_commands(cfg, peers):
                 _, stdout, stderr = ssh.run(f"{cmd} || true", check=False)

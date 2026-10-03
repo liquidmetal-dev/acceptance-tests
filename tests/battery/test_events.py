@@ -60,7 +60,7 @@ def _subsequence_present(haystack: list[int], needle: list[int]) -> bool:
 def test_events_subsequence(config, battery_client, hosts, vm_index):
     # No run_id prefix needed: the namespace already isolates the run.
     pool_name = "pool-events"
-    flintlock_hosts = [f"host-{i}" for i in range(len(hosts.droplets))]
+    flintlock_hosts = [f"host-{i}" for i in range(len(hosts.nodes))]
     events, stop = _drain_events_in_background(
         battery_client, pool_name, config.microvm_namespace
     )

@@ -54,6 +54,12 @@ lint:
 clean-tags:
 	$(PY) -m liquidmetal_at.infra.reaper
 
+# Delete any libvirt VMs, networks and overlay volumes left by local/self-hosted runs
+# (lm-acceptance-*). Base images are kept.
+.PHONY: clean-libvirt
+clean-libvirt:
+	$(PY) -m liquidmetal_at.infra.libvirt
+
 .PHONY: clean
 clean:
 	rm -rf $(GEN)/flapi $(GEN)/fltypes $(GEN)/poolmgr $(GEN)/__init__.py

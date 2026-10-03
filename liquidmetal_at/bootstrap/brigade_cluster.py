@@ -10,7 +10,7 @@ import logging
 
 from .. import brigade_status
 from ..config import Config
-from ..infra.do import Infra
+from ..infra.types import Infra
 from ..waiter import wait_until
 
 log = logging.getLogger("cluster")
@@ -18,7 +18,7 @@ log = logging.getLogger("cluster")
 
 def wait_for_cluster(cfg: Config, infra: Infra) -> None:
     target = cfg.brigade_min_cluster_size
-    for d in infra.droplets:
+    for d in infra.nodes:
         def _formed(ip=d.public_ip) -> bool:
             size = brigade_status.cluster_size(ip, cfg.brigade_status_port)
             log.info("node %s reports cluster size %d (want >= %d)", ip, size, target)
@@ -30,4 +30,4 @@ def wait_for_cluster(cfg: Config, infra: Infra) -> None:
             interval=5,
             description=f"brigade cluster size>={target} on {d.public_ip}",
         )
-    log.info("brigade cluster formed (size>=%d) across %d nodes", target, len(infra.droplets))
+    log.info("brigade cluster formed (size>=%d) across %d nodes", target, len(infra.nodes))

@@ -18,7 +18,7 @@ from liquidmetal_at.waiter import wait_until
 def test_lease_expiry_deletes_and_replenishes(config, battery_client, hosts, vm_index):
     # No run_id prefix needed: the namespace already isolates the run.
     pool_name = "pool-expiry"
-    flintlock_hosts = [f"host-{i}" for i in range(len(hosts.droplets))]
+    flintlock_hosts = [f"host-{i}" for i in range(len(hosts.nodes))]
 
     spec = build_pool_spec(
         config,

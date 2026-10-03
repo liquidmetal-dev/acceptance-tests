@@ -31,7 +31,7 @@ timeout = 2700
 log_cli = true
 log_cli_level = "INFO"
 markers = [
-    "e2e: full end-to-end test that provisions real DigitalOcean infrastructure",
+    "e2e: full end-to-end test that provisions real infrastructure (DigitalOcean or libvirt)",
 ]
 
 [tool.ruff]

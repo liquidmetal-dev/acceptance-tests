@@ -1,6 +1,6 @@
 """Drive per-host bootstrap over SSH: flintlock stack, then brigade node.
 
-Runs after droplets are active. Each host is provisioned in parallel; the brigade
+Runs after nodes are active. Each host is provisioned in parallel; the brigade
 config is peer-aware (all peer private IPs) so the nodes form an Erlang mesh.
 """
 from __future__ import annotations
@@ -10,17 +10,13 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 
 from ..config import Config
-from ..infra.do import ERLANG_DIST_HIGH, ERLANG_DIST_LOW, Droplet, Infra
+from ..infra.types import ERLANG_DIST_HIGH, ERLANG_DIST_LOW, Infra, Node
 from ..remote.ssh import SSH
 from .render import render
 
 log = logging.getLogger("bootstrap")
 
-# The DO block volume attaches by name at a stable /dev/disk/by-id path; the raw
-# device is /dev/sda for the first attached volume on DO droplets.
-THINPOOL_DISK = "/dev/sda"
 THINPOOL_NAME = "flintlock-thinpool"
-PARENT_IFACE = "eth1"  # DO private-network interface inside the VPC
 BRIDGE_NAME = "flintlock0"  # host bridge flintlock attaches guest TAP devices to
 
 
@@ -41,7 +37,9 @@ def _capacity(cfg: Config) -> tuple[int, int]:
     return vcpu, mem
 
 
-def _provision_flintlock(cfg: Config, ssh: SSH, *, enable_exec_api: bool = False) -> None:
+def _provision_flintlock(
+    cfg: Config, ssh: SSH, parent_iface: str | None, *, enable_exec_api: bool = False
+) -> None:
     ssh.run("cloud-init status --wait || true", timeout=1200)
     # provision.sh installs the flintlockd release matching FLINTLOCK_VERSION, defaulting to
     # 'latest'. When FLINTLOCK_REF is a semver tag (e.g. v0.10.0) pin the binary to that exact
@@ -50,8 +48,7 @@ def _provision_flintlock(cfg: Config, ssh: SSH, *, enable_exec_api: bool = False
     script = render(
         "provision_host.sh.j2",
         thinpool=THINPOOL_NAME,
-        disk=THINPOOL_DISK,
-        parent_iface=PARENT_IFACE,
+        parent_iface=parent_iface,
         bridge_name=BRIDGE_NAME,
         bridge_addr=cfg.microvm_gateway_cidr,
         guest_subnet=cfg.microvm_subnet_cidr,
@@ -101,14 +98,14 @@ def _provision_brigade(
 
 
 def bootstrap_host(
-    cfg: Config, droplet: Droplet, node_index: int, all_private_ips: list[str]
+    cfg: Config, node: Node, node_index: int, all_private_ips: list[str]
 ) -> None:
-    log.info("bootstrapping host%d (%s)", node_index, droplet.public_ip)
-    ssh = SSH(host=droplet.public_ip, user="root", key_path=cfg.ssh_private_key_path)
+    log.info("bootstrapping host%d (%s)", node_index, node.public_ip)
+    ssh = SSH(host=node.public_ip, user="root", key_path=cfg.ssh_private_key_path)
     ssh.connect(timeout=cfg.timeout_ssh)
     try:
-        _provision_flintlock(cfg, ssh)
-        _provision_brigade(cfg, ssh, node_index, droplet.private_ip, all_private_ips)
+        _provision_flintlock(cfg, ssh, node.parent_iface)
+        _provision_brigade(cfg, ssh, node_index, node.private_ip, all_private_ips)
     finally:
         ssh.close()
     log.info("host%d bootstrapped", node_index)
@@ -116,18 +113,18 @@ def bootstrap_host(
 
 def bootstrap_all(cfg: Config, infra: Infra) -> None:
     """Bootstrap all hosts in parallel."""
-    private_ips = [d.private_ip for d in infra.droplets]
-    with ThreadPoolExecutor(max_workers=len(infra.droplets)) as pool:
+    private_ips = [d.private_ip for d in infra.nodes]
+    with ThreadPoolExecutor(max_workers=len(infra.nodes)) as pool:
         futures = [
             pool.submit(bootstrap_host, cfg, d, i, private_ips)
-            for i, d in enumerate(infra.droplets)
+            for i, d in enumerate(infra.nodes)
         ]
         for f in futures:
             f.result()  # re-raise any bootstrap failure
 
 
 def _provision_battery(cfg: Config, ssh: SSH, all_private_ips: list[str]) -> None:
-    """Install + run poolmgrd on this droplet, pointed at every flintlockd host."""
+    """Install + run poolmgrd on this node, pointed at every flintlockd host."""
     battery_version = cfg.battery_ref.removeprefix("v")
     hosts = [
         {"name": f"host-{i}", "address": f"{ip}:{cfg.flintlock_grpc_port}"}
@@ -156,31 +153,31 @@ def _provision_battery(cfg: Config, ssh: SSH, all_private_ips: list[str]) -> Non
     ssh.sudo("bash /tmp/provision_battery.sh", timeout=600)
 
 
-def bootstrap_host_battery(cfg: Config, droplet: Droplet, node_index: int) -> None:
-    log.info("bootstrapping flintlock host%d (%s)", node_index, droplet.public_ip)
-    ssh = SSH(host=droplet.public_ip, user="root", key_path=cfg.ssh_private_key_path)
+def bootstrap_host_battery(cfg: Config, node: Node, node_index: int) -> None:
+    log.info("bootstrapping flintlock host%d (%s)", node_index, node.public_ip)
+    ssh = SSH(host=node.public_ip, user="root", key_path=cfg.ssh_private_key_path)
     ssh.connect(timeout=cfg.timeout_ssh)
     try:
-        _provision_flintlock(cfg, ssh, enable_exec_api=True)
+        _provision_flintlock(cfg, ssh, node.parent_iface, enable_exec_api=True)
     finally:
         ssh.close()
     log.info("host%d bootstrapped", node_index)
 
 
 def bootstrap_all_battery(cfg: Config, infra: Infra) -> None:
-    """Bootstrap flintlock on every droplet in parallel, then poolmgrd on droplet 0
+    """Bootstrap flintlock on every node in parallel, then poolmgrd on node 0
     (pointed at all of them) - battery is a single-instance manager, not a peer mesh,
     so unlike brigade it only runs on one node."""
-    with ThreadPoolExecutor(max_workers=len(infra.droplets)) as pool:
+    with ThreadPoolExecutor(max_workers=len(infra.nodes)) as pool:
         futures = [
             pool.submit(bootstrap_host_battery, cfg, d, i)
-            for i, d in enumerate(infra.droplets)
+            for i, d in enumerate(infra.nodes)
         ]
         for f in futures:
             f.result()  # re-raise any bootstrap failure
 
-    private_ips = [d.private_ip for d in infra.droplets]
-    ssh = SSH(host=infra.droplets[0].public_ip, user="root", key_path=cfg.ssh_private_key_path)
+    private_ips = [d.private_ip for d in infra.nodes]
+    ssh = SSH(host=infra.nodes[0].public_ip, user="root", key_path=cfg.ssh_private_key_path)
     ssh.connect(timeout=cfg.timeout_ssh)
     try:
         _provision_battery(cfg, ssh, private_ips)

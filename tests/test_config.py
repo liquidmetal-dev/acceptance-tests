@@ -35,6 +35,11 @@ def _prime_required(monkeypatch, tmp_path):
     priv.write_text("PRIVATE")
     empty_env = tmp_path / "empty.env"
     empty_env.write_text("")
+    # Isolate from the caller's environment: `INFRA_BACKEND=libvirt make test` runs these too.
+    for var in ("INFRA_BACKEND", "RUN_ID", "LIBVIRT_URI", "LIBVIRT_POOL", "LIBVIRT_VCPUS",
+                "LIBVIRT_MEMORY_MB", "LIBVIRT_DISK_GB", "LIBVIRT_SUBNET_PREFIX",
+                "LIBVIRT_BASE_IMAGE_URL", "LIBVIRT_BASE_IMAGE_SHA256"):
+        monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("DO_API_TOKEN", "dummy-token")
     monkeypatch.setenv("MICROVM_KERNEL_IMAGE", "ghcr.io/example/kernel:5.10")
     monkeypatch.setenv("MICROVM_ROOTFS_IMAGE", "ghcr.io/example/rootfs:1.0")
@@ -155,3 +160,69 @@ def test_battery_overrides(monkeypatch, tmp_path):
     assert cfg.battery_warning_window == "1s"
     assert cfg.battery_log_level == "warn"
     assert cfg.timeout_pool_available == 600
+
+
+def test_backend_defaults_to_digitalocean(monkeypatch, tmp_path):
+    empty_env = _prime_required(monkeypatch, tmp_path)
+    monkeypatch.delenv("INFRA_BACKEND", raising=False)
+    cfg = load(dotenv_path=empty_env)
+    assert cfg.infra_backend == "digitalocean"
+    assert cfg.libvirt_uri == "qemu:///system"
+    assert cfg.libvirt_pool == "lm-acceptance"
+    assert cfg.libvirt_subnet_prefix == "10.210"
+    assert (cfg.libvirt_vcpus, cfg.libvirt_memory_mb, cfg.libvirt_disk_gb) == (4, 8192, 50)
+    assert "release-20260926" in cfg.libvirt_base_image_url
+    assert len(cfg.libvirt_base_image_sha256) == 64
+
+
+def test_digitalocean_backend_still_requires_token(monkeypatch, tmp_path):
+    empty_env = _prime_required(monkeypatch, tmp_path)
+    monkeypatch.delenv("DO_API_TOKEN")
+    with pytest.raises(ConfigError, match="DO_API_TOKEN"):
+        load(dotenv_path=empty_env)
+
+
+def test_libvirt_backend_needs_no_do_token(monkeypatch, tmp_path):
+    empty_env = _prime_required(monkeypatch, tmp_path)
+    monkeypatch.delenv("DO_API_TOKEN")
+    monkeypatch.setenv("INFRA_BACKEND", "libvirt")
+    monkeypatch.setenv("LIBVIRT_VCPUS", "2")
+    cfg = load(dotenv_path=empty_env)
+    assert cfg.infra_backend == "libvirt"
+    assert cfg.do_token == ""
+    assert cfg.libvirt_vcpus == 2
+
+
+def test_invalid_backend_raises(monkeypatch, tmp_path):
+    empty_env = _prime_required(monkeypatch, tmp_path)
+    monkeypatch.setenv("INFRA_BACKEND", "qemu")
+    with pytest.raises(ConfigError, match="INFRA_BACKEND"):
+        load(dotenv_path=empty_env)
+
+
+def test_libvirt_run_id_must_not_shadow_base_images(monkeypatch, tmp_path):
+    # Base volumes are named lm-acceptance-base-*; a run id starting with "base" would
+    # make that run's volumes look like base images and they would never be cleaned up.
+    empty_env = _prime_required(monkeypatch, tmp_path)
+    monkeypatch.setenv("INFRA_BACKEND", "libvirt")
+    monkeypatch.setenv("RUN_ID", "base-1")
+    with pytest.raises(ConfigError, match="RUN_ID"):
+        load(dotenv_path=empty_env)
+
+
+def test_libvirt_subnet_prefix_must_be_two_octets(monkeypatch, tmp_path):
+    empty_env = _prime_required(monkeypatch, tmp_path)
+    monkeypatch.setenv("INFRA_BACKEND", "libvirt")
+    monkeypatch.setenv("LIBVIRT_SUBNET_PREFIX", "10.210.0.0/16")
+    with pytest.raises(ConfigError, match="LIBVIRT_SUBNET_PREFIX"):
+        load(dotenv_path=empty_env)
+
+
+@pytest.mark.parametrize("run_id", ["has space", "a/b", "quote'd", "-leading-dash", "under_score"])
+def test_libvirt_run_id_must_be_a_safe_name(monkeypatch, tmp_path, run_id):
+    # The run id becomes libvirt domain/network/volume names, XML attributes and a hostname.
+    empty_env = _prime_required(monkeypatch, tmp_path)
+    monkeypatch.setenv("INFRA_BACKEND", "libvirt")
+    monkeypatch.setenv("RUN_ID", run_id)
+    with pytest.raises(ConfigError, match="RUN_ID"):
+        load(dotenv_path=empty_env)

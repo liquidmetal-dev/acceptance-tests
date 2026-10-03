@@ -21,8 +21,8 @@ log = logging.getLogger("test_placement")
 FLINTLOCK_STATE_DIR = "/var/lib/flintlock/vm"
 
 
-def _ids_on_host(config, droplet) -> set[str]:
-    ssh = SSH(host=droplet.public_ip, user="root", key_path=config.ssh_private_key_path)
+def _ids_on_host(config, node) -> set[str]:
+    ssh = SSH(host=node.public_ip, user="root", key_path=config.ssh_private_key_path)
     ssh.connect(timeout=config.timeout_ssh)
     try:
         ns_dir = f"{FLINTLOCK_STATE_DIR}/{config.microvm_namespace}"
@@ -63,13 +63,13 @@ def test_placement_spreads_across_hosts(config, fl_client, cluster, vm_index):
         assert len(our_ids) >= n
 
         # Authoritative spread check via per-host flintlock state.
-        per_host = {d.public_ip: _ids_on_host(config, d) for d in cluster.droplets}
+        per_host = {d.public_ip: _ids_on_host(config, d) for d in cluster.nodes}
         for ip, ids in per_host.items():
             log.info("host %s holds %d microvms: %s", ip, len(ids), sorted(ids))
 
         hosting = [ip for ip, ids in per_host.items() if ids & our_ids]
-        assert len(hosting) == len(cluster.droplets), (
-            f"expected microVMs on all {len(cluster.droplets)} hosts, "
+        assert len(hosting) == len(cluster.nodes), (
+            f"expected microVMs on all {len(cluster.nodes)} hosts, "
             f"got {len(hosting)}: {per_host}"
         )
 
@@ -86,7 +86,7 @@ def test_placement_spreads_across_hosts(config, fl_client, cluster, vm_index):
         # Opportunistic brigade /status cross-check (tolerant; skip if schema unknown).
         try:
             pmap = brigade_status.placement_map(
-                cluster.droplets[0].public_ip, config.brigade_status_port
+                cluster.nodes[0].public_ip, config.brigade_status_port
             )
             if pmap:
                 assert len({h for u, h in pmap.items() if u in created}) >= 2
