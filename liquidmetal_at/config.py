@@ -36,6 +36,16 @@ def _env(name: str, default: str = "") -> str:
     return "" if v.startswith("#") else v
 
 
+DEFAULT_LIBVIRT_URI = "qemu:///system"
+DEFAULT_LIBVIRT_POOL = "lm-acceptance"
+# Pinned Ubuntu 22.04 cloud image (matches DO_IMAGE). Bump the URL and checksum together.
+_LIBVIRT_BASE_IMAGE_URL = (
+    "https://cloud-images.ubuntu.com/releases/jammy/release-20260926/"
+    "ubuntu-22.04-server-cloudimg-amd64.img"
+)
+_LIBVIRT_BASE_IMAGE_SHA256 = "0c9811a81e6329acacbb5ae4e701a7650f85cd3f19852cd159d79ab8357b210e"
+
+
 class ConfigError(RuntimeError):
     """Raised when required configuration is missing or invalid."""
 
@@ -106,6 +116,18 @@ class Config:
     microvm_ch_kernel_image: str = ""
     microvm_ch_kernel_filename: str = ""
 
+    # infrastructure backend (digitalocean | libvirt) — where the flintlock hosts run.
+    # Distinct from microvm_provider, which is the hypervisor *inside* each host.
+    infra_backend: str = "digitalocean"
+    libvirt_uri: str = DEFAULT_LIBVIRT_URI
+    libvirt_pool: str = DEFAULT_LIBVIRT_POOL
+    libvirt_base_image_url: str = _LIBVIRT_BASE_IMAGE_URL
+    libvirt_base_image_sha256: str = _LIBVIRT_BASE_IMAGE_SHA256
+    libvirt_subnet_prefix: str = "10.210"
+    libvirt_vcpus: int = 4
+    libvirt_memory_mb: int = 8192
+    libvirt_disk_gb: int = 50
+
     tag_prefix: str = field(default="lm-acceptance", init=False)
 
     @property
@@ -124,7 +146,7 @@ class Config:
 
     @property
     def tag(self) -> str:
-        """DigitalOcean tag applied to every resource this run creates."""
+        """Name/tag applied to every infra resource this run creates."""
         return f"{self.tag_prefix}-{self.run_id}"
 
     @property
@@ -175,19 +197,38 @@ def flintlock_ref_below(ref: str, minimum: str) -> bool:
 
 _PROVIDERS = ("firecracker", "cloudhypervisor")
 _BATTERY_LOG_LEVELS = ("debug", "info", "warn", "error")
+_BACKENDS = ("digitalocean", "libvirt")
+_SUBNET_PREFIX = re.compile(r"^\d{1,3}\.\d{1,3}$")
 
 
 def load(dotenv_path: str | None = None) -> Config:
     """Load and validate configuration from the environment / .env file."""
     load_dotenv(dotenv_path, override=False)
 
+    backend = (_env("INFRA_BACKEND") or "digitalocean").lower()
+    if backend not in _BACKENDS:
+        raise ConfigError(f"INFRA_BACKEND={backend!r} invalid; must be one of {_BACKENDS}")
+
     # Drop non-printable/control chars (e.g. a stray ESC from a colorized paste) that a
     # plain .strip() would leave in place and corrupt the Authorization header.
     token = "".join(c for c in os.environ.get("DO_API_TOKEN", "") if c.isprintable()).strip()
-    if not token:
+    if backend == "digitalocean" and not token:
         raise ConfigError("DO_API_TOKEN is required")
 
     run_id = _env("RUN_ID") or f"at-{secrets.token_hex(4)}"
+
+    subnet_prefix = _env("LIBVIRT_SUBNET_PREFIX") or "10.210"
+    if backend == "libvirt":
+        if run_id.startswith("base"):
+            raise ConfigError(
+                f"RUN_ID={run_id!r} must not start with 'base' on the libvirt backend "
+                "(reserved for base image volumes)"
+            )
+        if not _SUBNET_PREFIX.match(subnet_prefix):
+            raise ConfigError(
+                f"LIBVIRT_SUBNET_PREFIX={subnet_prefix!r} invalid; give the first two "
+                "octets, e.g. 10.210"
+            )
 
     kernel = os.environ.get("MICROVM_KERNEL_IMAGE", "").strip()
     rootfs = os.environ.get("MICROVM_ROOTFS_IMAGE", "").strip()
@@ -274,6 +315,17 @@ def load(dotenv_path: str | None = None) -> Config:
         microvm_provider=provider,
         microvm_ch_kernel_image=_env("MICROVM_CH_KERNEL_IMAGE"),
         microvm_ch_kernel_filename=_env("MICROVM_CH_KERNEL_FILENAME"),
+        infra_backend=backend,
+        libvirt_uri=_env("LIBVIRT_URI") or DEFAULT_LIBVIRT_URI,
+        libvirt_pool=_env("LIBVIRT_POOL") or DEFAULT_LIBVIRT_POOL,
+        libvirt_base_image_url=_env("LIBVIRT_BASE_IMAGE_URL") or _LIBVIRT_BASE_IMAGE_URL,
+        libvirt_base_image_sha256=(
+            _env("LIBVIRT_BASE_IMAGE_SHA256") or _LIBVIRT_BASE_IMAGE_SHA256
+        ).lower(),
+        libvirt_subnet_prefix=subnet_prefix,
+        libvirt_vcpus=int(_env("LIBVIRT_VCPUS") or "4"),
+        libvirt_memory_mb=int(_env("LIBVIRT_MEMORY_MB") or "8192"),
+        libvirt_disk_gb=int(_env("LIBVIRT_DISK_GB") or "50"),
     )
     _validate_microvm_shape(cfg.microvm_mem_mb, cfg.microvm_vcpu, cfg.microvm_kernel_filename)
     return cfg
