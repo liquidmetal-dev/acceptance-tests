@@ -14,13 +14,16 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import urllib.request
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from pathlib import Path
 
-from ..config import Config
+from dotenv import load_dotenv
+
+from ..config import DEFAULT_LIBVIRT_POOL, DEFAULT_LIBVIRT_URI, Config
 
 log = logging.getLogger("infra.libvirt")
 
@@ -171,3 +174,98 @@ def ensure_base_image(cfg: Config, run: Runner = _exec) -> str:
         _virsh(uri, run, "vol-delete", "--pool", pool, name)
         raise
     return name
+
+
+# --- teardown ----------------------------------------------------------------
+
+
+def _virsh_quiet(uri: str, run: Runner, *args: str) -> None:
+    """Run a virsh command whose failure is expected and harmless (e.g. already stopped)."""
+    try:
+        _virsh(uri, run, *args)
+    except LibvirtError as exc:
+        log.debug("ignored: %s", exc)
+
+
+def _destroy_matching(uri: str, pool: str, match: Callable[[str], bool], run: Runner) -> None:
+    """Remove every domain, non-base volume and network whose name satisfies ``match``.
+
+    Order: domains first (they hold the volumes and network open), then volumes, then
+    networks. Safe to call twice.
+    """
+    for dom in _virsh(uri, run, "list", "--all", "--name").split():
+        if match(dom):
+            _virsh_quiet(uri, run, "destroy", dom)  # fails if not running
+            _virsh(uri, run, "undefine", dom, "--nvram")
+    if pool in _virsh(uri, run, "pool-list", "--name").split():
+        _virsh(uri, run, "pool-refresh", pool)  # console logs are created by QEMU, not virsh
+        for vol in _volumes(uri, pool, run):
+            if match(vol) and not vol.startswith(BASE_PREFIX):
+                _virsh(uri, run, "vol-delete", "--pool", pool, vol)
+    for net in _virsh(uri, run, "net-list", "--all", "--name").split():
+        if match(net):
+            _virsh_quiet(uri, run, "net-destroy", net)  # fails if not active
+            _virsh(uri, run, "net-undefine", net)
+
+
+def _belongs_to(tag: str) -> Callable[[str], bool]:
+    """Exact-run matcher: ``lm-acceptance-at-1`` must not match ``lm-acceptance-at-10``."""
+    return lambda name: name == tag or name.startswith(f"{tag}-host")
+
+
+def destroy_run(cfg: Config, run: Runner = _exec) -> None:
+    """Idempotently delete every libvirt object belonging to this run."""
+    log.info("tearing down libvirt infra %s", cfg.tag)
+    _destroy_matching(cfg.libvirt_uri, cfg.libvirt_pool, _belongs_to(cfg.tag), run)
+
+
+def sweep(uri: str, pool: str, run: Runner = _exec) -> None:
+    """Delete every lm-acceptance-* domain, network and volume except base images."""
+    log.info("sweeping all %s* libvirt resources at %s", PREFIX, uri)
+    _destroy_matching(uri, pool, lambda name: name.startswith(PREFIX), run)
+
+
+# --- diagnostics -------------------------------------------------------------
+
+
+def collect_consoles(cfg: Config, run: Runner = _exec) -> None:
+    """Save each VM's serial console log to the artifacts dir. Best effort: never raises.
+
+    The console is the only evidence when a VM never boots or never gets an address,
+    because every other log is collected over SSH.
+    """
+    uri, pool = cfg.libvirt_uri, cfg.libvirt_pool
+    out = Path(cfg.artifacts_dir) / cfg.run_id
+    try:
+        if pool not in _virsh(uri, run, "pool-list", "--name").split():
+            return
+        out.mkdir(parents=True, exist_ok=True)
+        _virsh(uri, run, "pool-refresh", pool)
+        prefix = f"{cfg.tag}-"
+        for vol in _volumes(uri, pool, run):
+            if _belongs_to(cfg.tag)(vol) and vol.endswith("-console.log"):
+                dest = out / vol.removeprefix(prefix)
+                _virsh(uri, run, "vol-download", "--pool", pool, vol, str(dest))
+        log.info("collected VM console logs into %s", out)
+    except Exception as exc:  # noqa: BLE001 - diagnostics must not mask the real failure
+        log.warning("could not collect VM console logs: %s", exc)
+
+
+# --- sweep CLI (make clean-libvirt) -------------------------------------------
+
+
+def main() -> int:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    load_dotenv()
+    uri = os.environ.get("LIBVIRT_URI", "").strip() or DEFAULT_LIBVIRT_URI
+    pool = os.environ.get("LIBVIRT_POOL", "").strip() or DEFAULT_LIBVIRT_POOL
+    try:
+        sweep(uri, pool)
+    except LibvirtError as exc:
+        log.error("sweep failed: %s", exc)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

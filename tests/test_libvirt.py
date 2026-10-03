@@ -280,3 +280,81 @@ def test_failed_upload_removes_partial_base_volume(tmp_path, fake, monkeypatch):
     with pytest.raises(LibvirtError, match="connection reset"):
         libvirt.ensure_base_image(cfg, fake)
     assert fake.vols == []
+
+
+# --- teardown / sweep / consoles ---------------------------------------------
+
+BASE = "lm-acceptance-base-20260926-0c9811a8.qcow2"
+
+
+def _seed_two_runs(fake):
+    """Runs at-1 and at-10 side by side (one id is a prefix of the other) + a base image."""
+    fake.pools["lm-acceptance"] = True
+    fake.vols = [BASE]
+    for run_id in ("at-1", "at-10"):
+        tag = f"lm-acceptance-{run_id}"
+        fake.nets[tag] = "10.210.0.1"
+        for i in (0, 1):
+            fake.domains.append(f"{tag}-host{i}")
+            fake.vols += [f"{tag}-host{i}.qcow2", f"{tag}-host{i}-console.log"]
+
+
+def test_destroy_run_leaves_other_runs_and_base_image(tmp_path, fake):
+    _seed_two_runs(fake)
+    libvirt.destroy_run(_cfg(tmp_path, run_id="at-1"), fake)
+
+    assert fake.domains == ["lm-acceptance-at-10-host0", "lm-acceptance-at-10-host1"]
+    assert list(fake.nets) == ["lm-acceptance-at-10"]
+    assert BASE in fake.vols
+    assert not [v for v in fake.vols if v.startswith("lm-acceptance-at-1-")]
+    assert len([v for v in fake.vols if v.startswith("lm-acceptance-at-10-")]) == 4
+
+
+def test_destroy_run_is_idempotent(tmp_path, fake):
+    _seed_two_runs(fake)
+    cfg = _cfg(tmp_path, run_id="at-1")
+    libvirt.destroy_run(cfg, fake)
+    before = len(fake.calls)
+    libvirt.destroy_run(cfg, fake)  # nothing left: must not raise or delete anything
+    new = fake.calls[before:]
+    assert not [c for c in new if c[3] in ("undefine", "vol-delete", "net-undefine")]
+
+
+def test_destroy_run_tolerates_already_stopped_domains_and_networks(tmp_path, fake):
+    _seed_two_runs(fake)
+    fake.fail["destroy"] = "domain is not running"
+    fake.fail["net-destroy"] = "network is not active"
+    libvirt.destroy_run(_cfg(tmp_path, run_id="at-1"), fake)
+    assert "lm-acceptance-at-1-host0" not in fake.domains
+    assert "lm-acceptance-at-1" not in fake.nets
+
+
+def test_destroy_run_without_pool_still_removes_domains(tmp_path, fake):
+    fake.domains = ["lm-acceptance-at-1-host0"]
+    libvirt.destroy_run(_cfg(tmp_path, run_id="at-1"), fake)
+    assert fake.domains == []
+    assert not fake.ran("vol-list")
+
+
+def test_sweep_removes_every_run_but_keeps_base_images(fake):
+    _seed_two_runs(fake)
+    fake.domains.append("someone-elses-vm")
+    fake.nets["default"] = "192.168.122.1"
+    libvirt.sweep(URI, "lm-acceptance", fake)
+    assert fake.domains == ["someone-elses-vm"]
+    assert list(fake.nets) == ["default"]
+    assert fake.vols == [BASE]
+
+
+def test_collect_consoles_saves_this_runs_logs(tmp_path, fake):
+    _seed_two_runs(fake)
+    cfg = _cfg(tmp_path, run_id="at-1")
+    libvirt.collect_consoles(cfg, fake)
+    out = Path(cfg.artifacts_dir) / "at-1"
+    assert sorted(p.name for p in out.iterdir()) == ["host0-console.log", "host1-console.log"]
+    assert "lm-acceptance-at-1-host0-console.log" in (out / "host0-console.log").read_text()
+
+
+def test_collect_consoles_never_raises(tmp_path, fake):
+    fake.fail["pool-list"] = "daemon gone"
+    libvirt.collect_consoles(_cfg(tmp_path), fake)  # best effort
