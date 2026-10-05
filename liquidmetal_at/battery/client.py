@@ -1,4 +1,4 @@
-"""Thin wrapper around battery's PoolAdmin/Lease/Events gRPC stubs, pointed at poolmgrd.
+"""Thin wrapper around battery's PoolAdmin/Lease/Events/HostAdmin gRPC stubs, pointed at poolmgrd.
 
 Mirrors the shape of :mod:`liquidmetal_at.flintlock.client`: thin CRUD/claim wrappers
 plus ``wait_until``-based waiters for the async pool-provisioning/replenishment flow.
@@ -12,6 +12,8 @@ import grpc
 from poolmgr.v1alpha1 import (  # noqa: E402
     events_pb2,
     events_pb2_grpc,
+    hostadmin_pb2,
+    hostadmin_pb2_grpc,
     lease_pb2,
     lease_pb2_grpc,
     pooladmin_pb2,
@@ -40,6 +42,7 @@ class PoolManagerClient:
         self._admin = pooladmin_pb2_grpc.PoolAdminStub(self._channel)
         self._lease = lease_pb2_grpc.LeaseStub(self._channel)
         self._events = events_pb2_grpc.EventsStub(self._channel)
+        self._hosts = hostadmin_pb2_grpc.HostAdminStub(self._channel)
         self._timeout = timeout
 
     def close(self) -> None:
@@ -76,9 +79,12 @@ class PoolManagerClient:
         resp = self._admin.ListPools(req, timeout=self._timeout)
         return list(resp.pools)
 
-    def delete_pool(self, name: str, namespace: str) -> None:
+    def delete_pool(self, name: str, namespace: str, *, force: bool = False) -> None:
+        """Delete a pool and its unleased VMs; ``force`` also deletes leased VMs (v0.4.0+)."""
         self._admin.DeletePool(
-            pooladmin_pb2.DeletePoolRequest(ref=types_pb2.PoolRef(name=name, namespace=namespace)),
+            pooladmin_pb2.DeletePoolRequest(
+                ref=types_pb2.PoolRef(name=name, namespace=namespace), force=force
+            ),
             timeout=self._timeout,
         )
 
@@ -91,11 +97,15 @@ class PoolManagerClient:
 
     # --- Lease ---
 
-    def claim_vm(self, pool_name: str, pool_namespace: str) -> lease_pb2.ClaimVMResponse:
+    def claim_vm(
+        self, pool_name: str, pool_namespace: str, *, request_id: str = ""
+    ) -> lease_pb2.ClaimVMResponse:
+        """Claim a VM. A repeated ``request_id`` replays the first claim's lease (v0.4.0+)."""
         try:
             return self._lease.ClaimVM(
                 lease_pb2.ClaimVMRequest(
-                    pool=types_pb2.PoolRef(name=pool_name, namespace=pool_namespace)
+                    pool=types_pb2.PoolRef(name=pool_name, namespace=pool_namespace),
+                    request_id=request_id,
                 ),
                 timeout=self._timeout,
             )
@@ -129,6 +139,23 @@ class PoolManagerClient:
 
     def lease_ids(self, pool_name: str, pool_namespace: str) -> set[str]:
         return {lease.lease_id for lease in self.list_leases(pool_name, pool_namespace)}
+
+    # --- HostAdmin (battery >= v0.4.0) ---
+
+    def list_hosts(self) -> list[hostadmin_pb2.HostStatus]:
+        resp = self._hosts.ListHosts(hostadmin_pb2.ListHostsRequest(), timeout=self._timeout)
+        return list(resp.hosts)
+
+    def cordon_host(self, name: str, reason: str = "") -> types_pb2.Host:
+        """Stop the reconciler placing new VMs on a host; its existing VMs are untouched."""
+        return self._hosts.CordonHost(
+            hostadmin_pb2.CordonHostRequest(name=name, reason=reason), timeout=self._timeout
+        )
+
+    def uncordon_host(self, name: str) -> types_pb2.Host:
+        return self._hosts.UncordonHost(
+            hostadmin_pb2.UncordonHostRequest(name=name), timeout=self._timeout
+        )
 
     # --- Events ---
 

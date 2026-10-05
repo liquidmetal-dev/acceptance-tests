@@ -1,10 +1,11 @@
 """Happy-path pool lifecycle: create -> reconciler provisions -> get/list -> delete.
 
 Pool size is deliberately 1 - verified directly from upstream
-(``internal/reconciler/provision.go``, v0.3.2) that the reconciler gives each VM its own ``id``
+(``internal/reconciler/provision.go``, v0.4.0) that the reconciler gives each VM its own ``id``
 but still clones the template's static IP and ``guest_mac`` verbatim, so a template carrying a
 static IP (as ours does, see ``liquidmetal_at/flintlock/spec.py``) is only safe for size=1
-pools. See docs/battery-known-gaps.md.
+pools, and since v0.4.0 battery rejects it for anything larger. See
+docs/battery-known-gaps.md.
 """
 from __future__ import annotations
 

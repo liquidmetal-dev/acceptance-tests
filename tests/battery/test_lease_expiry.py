@@ -55,7 +55,8 @@ def test_lease_expiry_deletes_and_replenishes(config, battery_client, hosts, vm_
         battery_client.release_vm(replacement.lease_id)
         assert replacement.vm_uid != claimed.vm_uid
     finally:
-        battery_client.delete_pool(pool_name, config.microvm_namespace)
+        # force: a failure above can leave a lease, which a plain delete refuses
+        battery_client.delete_pool(pool_name, config.microvm_namespace, force=True)
         try:
             battery_client.wait_deleted(
                 pool_name, config.microvm_namespace, timeout=config.timeout_pool_available

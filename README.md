@@ -61,7 +61,7 @@ make test-battery          # provisions flintlock hosts + poolmgrd, runs tests/b
 `make test` (brigade) and `make test-battery` are independent — each provisions and tears down
 its own infra. `.venv/bin/pytest tests` runs both suites back to back if you want the full,
 more expensive run. See `docs/battery-known-gaps.md` for constraints found while building this
-(pool `size` must stay `1` for now; no per-VM placement info in the API).
+(one pool VM per host for now; no per-VM placement info in the API).
 
 ## Prerequisites
 

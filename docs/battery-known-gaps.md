@@ -1,187 +1,123 @@
 # battery known gaps (tests/battery/)
 
 Notes from building the battery acceptance suite (https://github.com/liquidmetal-dev/battery,
-pre-alpha, last updated for `v0.3.2`) against this repo's real-infra pattern. Filed here rather than upstream
-issues since these are usage constraints confirmed by reading the source, not yet reported bugs.
+pre-alpha, last updated for `v0.4.0`). `tests/battery/` passes (10 of 10) on
+`BATTERY_REF=v0.4.0` + `FLINTLOCK_REF=v0.16.0`, run on the libvirt backend with Firecracker
+and `ghcr.io/liquidmetal-dev/ubuntu:24.04`.
 
-## `PoolSpec.microvm_template`'s network config is applied verbatim to every VM in the pool
+Two constraints are still open. The rest of this file records gaps that are now fixed,
+kept short so the version floors and the reasons behind them stay findable. Two flintlock
+issues found along the way are also still open; they are listed under the guest MAC entry.
 
-Confirmed by reading `internal/reconciler/provision.go`: `Provision` clones
-`pool.GetMicrovmTemplate()` with `proto.Clone` and overrides `AllowGuestAgent`, `Namespace`
-(only when empty) and — since v0.3.1 (`943c521`, "assign each provisioned VM its own id") —
-`Id`, which it sets to `<pool-name>-<8 hex>` per VM. The interface's static IP and `guest_mac`
-are still reused byte-for-byte for every VM the reconciler provisions for that pool.
+## Open
 
-Our `microvm_template` (`liquidmetal_at/flintlock/spec.py::build_spec`, reused from the brigade
-suite) sets a static IP per VM `index` — fine for a single flintlock create, but unsafe for a
-battery pool with `size > 1`: every VM in the pool would get the identical static address.
-`tests/battery/` works around this by keeping every pool's `size` at `1`. If a future
-scenario needs `size > 1`, either use a template with a DHCP/MMDS-based address instead of a
-static one, or wait for upstream to support per-VM address variation.
+### A pool can hold only one VM per host
 
-## Guest-agent socket path overflowed `sun_path` before flintlock v0.15.2 (resolved)
+`Provisioner.Provision` (`internal/reconciler/provision.go`) clones `pool.GetMicrovmTemplate()`
+and overrides only `AllowGuestAgent`, `Id` (`<pool-name>-<8 hex>` per VM) and, when empty,
+`Namespace`. An interface's static address and `guest_mac` are sent unchanged for every VM, so
+since v0.4.0 (https://github.com/liquidmetal-dev/battery/issues/114) `CreatePool`/`UpdatePool`
+return `INVALID_ARGUMENT` for a template that sets either when `size > 1`, when the strategy is
+`IMMEDIATE_ON_LEASE`, or when `hook_failure_policy` is `QUARANTINE`.
+`tests/battery/test_pool_validation.py` checks the rejection.
 
-Since battery v0.3.1 each VM's flintlock id is `<pool-name>-<8 hex>`. Before flintlock v0.15.2
-that id was part of the guest-agent socket path,
-`/var/lib/flintlock/vm/<namespace>/<pool-name>-xxxxxxxx/<26-char ULID>/guest-agent.vsock`. Linux
-caps that path at 107 usable bytes (`sun_path`), which left only 30 bytes for namespace + pool
-name. Nothing validated it: `CreatePool` accepted the pool, and every VM then failed after
-`CreateMicroVM` succeeded, with `connect: invalid argument`. This suite's old
-`<run_id>-pool-<x>` names in namespace `<run_id>` came to about 114 bytes. Filed as
-https://github.com/liquidmetal-dev/battery/issues/94.
+The suite therefore has two templates (`build_pool_spec(..., network=...)`):
 
-Fixed on the flintlock side in v0.15.2 (flintlock#1227, fixes flintlock#1226): per-VM sockets now
-live at `<socket-dir>/<uid>/` (default `/run/flintlock/<uid>/guest-agent.vsock`, 49 bytes), so
-their length no longer depends on namespace or name. `tests/battery/conftest.py` stops the run up
-front if `FLINTLOCK_REF` is a release tag older than v0.15.2. Pools are still named `pool-<x>`,
-because the namespace already isolates each run.
+- `static` (the default, shared with the brigade suite): a static IP and `guest_mac` per VM
+  `index`. Only for `size: 1` pools.
+- `dhcp`: no address and no `guest_mac`. Each battery host serves DHCP on its flintlock bridge
+  (dnsmasq, set up by `bootstrap/host.py`) from its own range
+  (`Config.microvm_dhcp_range`). `tests/battery/test_pool_multi_vm.py` uses it for a size-2
+  pool and checks each VM's address by vsock, the lease file and SSH.
 
-## Event-driven pools were never seeded before v0.3.2
+What is still limited with the `dhcp` template:
 
-Before battery v0.3.2 (`327efbb`, "seed event-driven pools when their reconciler starts"), a
-`REPLACE_ON_DELETE` or `IMMEDIATE_ON_LEASE` pool only provisioned in response to a delete or a
-claim. A freshly created pool was empty, so nothing could be claimed or deleted, and it never
-provisioned anything. 3 of the 4 tests here (`test_claim_release`, `test_events`,
-`test_lease_expiry`) use `REPLACE_ON_DELETE`, so on v0.1.0 they would have timed out waiting for
-`AVAILABLE` regardless of flintlock. This is likely a contributor to the failures below that
-were attributed only to flintlock's exec API. v0.3.2 tops these pools up to `size` whenever
-their reconciler starts (poolmgrd startup, `CreatePool`, `UpdatePool`).
+- **One pool VM per host.** A guest with no `guest_mac` derives its own MAC, and guests booted
+  from one template derive the same one (`fa:90:93:1a:a6:c1` on both hosts in our runs). Two
+  pool VMs on one bridge would share a MAC and a lease. The test sizes its pool to
+  `NODE_COUNT`, and battery's host picker (fewest VMs for the pool first) then puts one on
+  each host. Lifting this needs flintlock to give a TAP interface a unique guest MAC when
+  none is set: https://github.com/liquidmetal-dev/flintlock/issues/1284.
+- **Firecracker only.** Without `guest_mac` flintlock's netplan matches the NIC by name
+  (`eth1`), which a Cloud Hypervisor guest does not use. `build_spec(network="dhcp")` raises
+  for that provider and the test skips. https://github.com/liquidmetal-dev/flintlock/issues/1285.
+- `IMMEDIATE_ON_LEASE` and `QUARANTINE` pools are not tested.
 
-## No per-VM/host attribution in the `PoolAdmin` API
+### No per-VM/host attribution in the API
 
-`Pool` (`GetPool`/`ListPools`) only exposes `PoolSpec` + `PoolStatus` (aggregate counts:
-`available_count`/`leased_count`/`provisioning_count`/`quarantined_count`) — there's no RPC that
-returns the pool's individual `VMRecord`s (which host each VM landed on, its uid, its phase).
-`ClaimVM`'s response does return one VM's `host` once it's claimed, but there's no way to inspect
-placement across a pool's VMs without claiming all of them. `Lease.ListLeases` (v0.2.0) now
-lists a pool's live leases (`LeaseRecord`: lease id, VM uid, timestamps), which the suite uses
-to assert release/expiry directly, but it only covers leased VMs and still carries no host. Any placement-style assertion has to
-fall back to the same SSH ground-truth technique `tests/test_placement.py` already uses against
-each flintlock host's own `/var/lib/flintlock/vm/` state, rather than the battery API.
+`Pool` (`GetPool`/`ListPools`) exposes `PoolSpec` + `PoolStatus` (aggregate counts only). No RPC
+returns a pool's individual VM records (host, uid, phase). `ClaimVM`'s response gives one VM's
+`host` once claimed, `Lease.ListLeases` lists live leases (lease id, VM uid, timestamps) without
+a host, and v0.4.0's `HostAdmin.ListHosts` gives a `vm_count` per host but not which VMs
+(`tests/battery/test_host_cordon.py` uses `ClaimVM`'s `host` to check a cordon). `ClaimVM` returns no guest address either, so
+`liquidmetal_at/battery/guest.py::assert_claimed_vm_accessible` asks the guest for it over
+vsock and then SSHes in; `test_claim_release` and `test_pool_multi_vm` use it to check that a
+claimed VM, and its replacement, can actually be used. The other tests check API behaviour
+only. Any other
+placement-style assertion has to fall back to the SSH ground-truth technique
+`tests/test_placement.py` uses against each flintlock host's `/var/lib/flintlock/vm/` state.
 
-## Runbook doc lags `main`
+## Resolved
 
-`docs/runbooks/e2e-manual-verification.md` (in the battery repo) states `cmd/poolmgrd/main.go`
-"never constructs or runs `reconciler.Sweeper`" and marks lease expiry (step 9) blocked. Reading
-`main.go` directly (at `v0.1.0`, and still at `v0.3.2`, where the runbook is unchanged on this
-point) shows this is stale: `reconciler.NewSweeper(...)` is constructed
-and run alongside the API/metrics servers. `tests/battery/test_lease_expiry.py` exercises it.
-Re-check this doc's accuracy whenever bumping `BATTERY_REF`.
+### Guest MAC collided with flintlock's metadata interface (this repo)
 
-## flintlock's exec-API session never completes (blocks every pool indefinitely)
+`build_spec` used to generate `aa:ff:00:00:<index>` as the guest MAC. flintlock gives every VM's
+metadata interface (eth0) the fixed MAC `AA:FF:00:00:00:01`, so the VM at index 1 had the same
+MAC on two NICs. Firecracker rejects that config and exits ("The MAC address is already in use"),
+flintlock still reports the VM `CREATED`, and the only symptom from battery's side is
+`dial unix /run/flintlock/<uid>/guest-agent.vsock: connect: no such file or directory` until
+`WaitReady` gives up. `test_events` (index 1) failed this way on every attempt. The scheme is
+now `aa:ff:00:01:<index>`. When a VM never becomes ready, read
+`/var/lib/flintlock/vm/<ns>/<name>/<uid>/firecracker.log` on the host before battery deletes it.
 
-As of `FLINTLOCK_REF=v0.14.0` (current tip of `main` at the time of writing — no newer commit
-exists to pull in), **every `tests/battery/` test times out** waiting for a VM to reach
-`AVAILABLE`, regardless of which rootfs/kernel image is used. This reproduces identically with
-flintlock's official prebuilt `flintlockd` release binary, so it isn't specific to building from
-source.
+Both flintlock behaviours that hid this are still open upstream:
 
-Root cause, traced end-to-end across three log sources for a single failing VM:
+- https://github.com/liquidmetal-dev/flintlock/issues/1283: `CreateMicroVM` accepts a
+  `guest_mac` equal to the metadata interface's MAC instead of rejecting it.
+- https://github.com/liquidmetal-dev/flintlock/issues/1263: a MicroVM is reported `CREATED`
+  when its VMM has already exited.
 
-- `poolmgrd`'s reconciler (`internal/reconciler/provision.go`, see the gap above) calls
-  `flintlockclient.WaitReady`, which issues a no-op `exec true` over flintlock's `MicroVMExec`
-  gRPC service (`--enable-exec-api`, added in flintlock v0.13.0 — see `battery/spec.py`).
-- flintlockd's handler (`infrastructure/grpc/exec_server.go::ExecCommand`) opens a vsock session
-  to the guest-agent and loops on `session.Next()` until it sees an `EventExit`, at which point it
-  returns. That read has **no deadline** (the code's own comment acknowledges this — a context
-  cancellation is the only other way out).
-- The raw vsock wire trace (Firecracker's own trace-level device log) shows the guest-agent
-  completing the exchange cleanly: it answers the exec request, then half-closes and RSTs the
-  connection. flintlockd's `session.Next()` never returns after that — no error, no `EventExit`,
-  nothing. `poolmgrd`'s RPC (and therefore the whole reconcile loop for that pool) hangs forever;
-  `poolmgrd`'s own log goes silent immediately after the one exec attempt (it only logs at
-  ERROR/startup by default, so a hang produces no output at all), and flintlockd itself never logs
-  again either since it's parked on that same blocked read.
+### `DeletePool` refused any pool that still had VMs (fixed in v0.4.0)
 
-In short: `infrastructure/vsockexec`'s session reader doesn't detect the guest side closing the
-connection, and never returns a corresponding `EventExit`/error. Every battery test needs at least
-one VM's `CREATE_HOOK_RUNNING` guest-agent check to complete, so this blocks the entire suite until
-it's fixed upstream. No config or image change in this repo can work around it — filed here since
-it's a bug in flintlock's exec/vsock plumbing itself, not this repo's usage of it.
+Before v0.4.0 `DeletePool` returned `FAILED_PRECONDITION` for a pool with any VM, and the API
+had no way to empty one. Since v0.4.0 it deletes the pool's unleased VMs itself and refuses only
+while a VM is leased, unless `DeletePoolRequest.force` is set.
+https://github.com/liquidmetal-dev/battery/issues/112. `tests/battery/test_delete_pool.py`
+covers the leased case, and the `finally` cleanups in the other tests pass `force=True`.
 
-Filed upstream: https://github.com/liquidmetal-dev/flintlock/issues/1200.
+### A failed provision in an event-driven pool was never retried (fixed in v0.4.0)
 
-**Update (flintlock v0.14.1):** flintlock v0.14.1 ships `#1201` ("fix(exec): bound guest-agent
-exec session reads with an idle deadline"), which for battery's exact call shape
-(`flintlockclient.WaitReady` → `Exec` with `ExecOptions{}`, i.e. `TimeoutSec: 0`) falls back to a
-15-minute `ExecSessionUnboundedIdleCeiling` (`pkg/defaults/defaults.go`) rather than leaving the
-read fully unbounded. Confirmed this constant is present in the v0.14.1 tag. Re-ran
-`tests/battery/` against v0.14.1 and it still fails the same way within our default
-`TIMEOUT_POOL_AVAILABLE=300s` (5 min) — well short of the 15-minute ceiling, so this repo's own
-timeout was too impatient to observe whether the reconciler actually recovers once that ceiling
-fires. `TIMEOUT_POOL_AVAILABLE` has been bumped to `1200`s in `.env.example` to give it room to.
+Before v0.4.0 `REPLACE_ON_DELETE` and `IMMEDIATE_ON_LEASE` pools provisioned only on the
+start-of-life seed (itself added in v0.3.2, `327efbb`) and on delete/claim notifications, so one
+failed provision left a `size: 1` pool empty for good. Since v0.4.0 the reconciler tops these
+pools back up to `size` on every tick. https://github.com/liquidmetal-dev/battery/issues/113.
 
-That said, upstream itself now doubts the idle-timeout/missing-EOF diagnosis is the real root
-cause: see https://github.com/liquidmetal-dev/flintlock/issues/1203 (filed by the same author),
-which proposes replacing the `TimeoutSec`-derived deadline with a guest-agent heartbeat signal
-once available, and explicitly notes "#1201's review discussion also raised an open question on
-whether the exact scenario in #1200 ... is actually explained by a missing-EOF/idle-timeout
-theory at all." Per discussion with the repo owner, holding off on further real-infra e2e runs
-against this until a real root-cause fix lands upstream (tracked by #1203, blocked on
-liquidmetal-dev/guest-agent#13) rather than spending infra time confirming/refuting the
-15-minute-ceiling workaround.
+### Guest-agent socket path overflowed `sun_path` (fixed in flintlock v0.15.2)
 
-Thread, in order: https://github.com/liquidmetal-dev/flintlock/issues/1200 (original bug) →
-https://github.com/liquidmetal-dev/flintlock/issues/1200#issuecomment-5581737376 (incorrect
-"no idle deadline at all" claim — see next comment) →
-https://github.com/liquidmetal-dev/flintlock/issues/1200#issuecomment-5581782906 (correction:
-15-min ceiling does exist) → https://github.com/liquidmetal-dev/flintlock/issues/1203 (root
-cause likely misdiagnosed; heartbeat-based redesign proposed).
+battery v0.3.1+ names each VM `<pool-name>-<8 hex>`. Before flintlock v0.15.2 that id and the
+namespace were part of the guest-agent socket path, which overflowed Linux's 107-byte
+`sun_path` and failed every VM with `connect: invalid argument`
+(https://github.com/liquidmetal-dev/battery/issues/94, flintlock#1226, fixed by flintlock#1227).
+Sockets now live at `/run/flintlock/<uid>/`. `tests/battery/conftest.py` stops the run up front
+if `FLINTLOCK_REF` is a release tag older than v0.15.2, and battery v0.3.3+ checks the same.
 
-**Update (flintlock v0.15.0):** #1203 landed as `#1204` ("feat(exec): use guest-agent heartbeats
-for exec idle deadline", fixes #1203) and shipped in flintlock v0.15.0, alongside guest-agent
-v0.4.0. Re-ran `tests/battery/` against `FLINTLOCK_REF=v0.15.0` +
-`ghcr.io/liquidmetal-dev/ubuntu:24.04` (freshly pulled — no local image cache to go stale, each
-run provisions new droplets and containerd pulls fresh on the host).
+### flintlock exec-API hangs and handshake failures (fixed by flintlock v0.15.1)
 
-Good news: **the original infinite hang is gone.** Where v0.14.0/v0.14.1 left `flintlockd`
-permanently silent with no error ever surfacing, v0.15.0's reconciler now actually terminates
-with a clear error after retrying:
+battery's readiness probe (`flintlockclient.WaitReady`, a no-op exec over flintlock's
+`MicroVMExec`) never completed on flintlock v0.14.0, which blocked every pool:
 
-```
-ERROR reconciler: provision failed pool=<pool> error="reconciler: create hook failed: guest-agent
-not ready: flintlockclient: WaitReady <uid>: timed out, last error: flintlockclient: exec <uid>:
-rpc error: code = Unknown desc = starting guest-agent exec session: dialling guest-agent control
-channel: handshake read: EOF"
-```
+- https://github.com/liquidmetal-dev/flintlock/issues/1200: the exec session read had no
+  deadline and hung forever. v0.14.1 bounded it with an idle deadline (#1201); v0.15.0 replaced
+  that with guest-agent heartbeats (#1203/#1204, guest-agent v0.4.0).
+- https://github.com/liquidmetal-dev/flintlock/issues/1205: the vsock `CONNECT` handshake got
+  EOF after repeated dials. Fixed in v0.15.1 with a bounded retry.
 
-Bad news: all 4 tests still fail, on a **different, lower-level fault**. "handshake read: EOF" is
-not a heartbeat/guest-agent protocol issue — it's Firecracker's own vsock-UDS `CONNECT <port>\n`
-/ `OK` handshake (`liquidmetal-dev/guest-agent/pkg/vsockclient.handshake`, used by flintlockd's
-host-side dial to Firecracker's vsock multiplexer, *before* any guest-agent-level exchange even
-begins) getting EOF instead of an `OK` reply. This points at Firecracker's vsock muxer itself,
-not at anything in guest-agent's heartbeat/exec protocol. Plausible cause: exhausting something
-in the muxer's connection-accept path after many rapid CONNECT/RST cycles from repeated
-`WaitReady` retries, though this run only captured one terminal error (pool-lifecycle) in 65
-minutes across 4 tests — the other 3 pools' reconcilers appear to keep retrying without ever
-logging a comparable terminal error within our `TIMEOUT_POOL_AVAILABLE=1200s` window, so this
-may still be masking further hangs rather than a clean, fast failure across the board.
+On v0.16.0 VMs become ready 20 to 30 seconds after flintlock reports `CREATED`. battery's
+`WaitReady` budget is 30 seconds, which is tight on nested virtualization; with the retry from
+battery#113 a miss now costs one more provision instead of the pool.
 
-Filed upstream as a separate issue (distinct from #1200/#1201/#1204, which are fixed):
-https://github.com/liquidmetal-dev/flintlock/issues/1205
+### battery runbook said lease expiry was blocked (fixed in v0.4.0)
 
-**Update (flintlock v0.15.1):** `#1205` was fixed by a bounded dial+handshake retry
-("fix(vsockexec): retry transient guest-agent handshake failures", fixes #1205). Re-ran
-`tests/battery/` against `FLINTLOCK_REF=v0.15.1` — still all 4 tests fail, but this run's
-`poolmgrd` log recorded **zero** terminal `ERROR reconciler` lines across all 4 tests (vs. one in
-the v0.15.0 run), suggesting the handshake-EOF fix worked and no pool hit that specific failure
-this time.
-
-However, the same "one exec exchange completes cleanly, then flintlockd logs nothing else"
-pattern from the original #1200 hang reappeared for the run's last VM — right at the tail end of
-the run, close enough to the test's own timeout/teardown that it's ambiguous whether this
-specific case actually hung again or the run simply ended before the outcome could be observed
-either way. Not clear-cut enough to treat as a confirmed regression of #1200, but also not a
-clean pass. Needs a longer, dedicated run (or per-VM state polling instead of relying on log
-tails) to disambiguate.
-
-Re-run `tests/battery/` once a `FLINTLOCK_REF` newer than v0.15.1 is available, or investigate
-directly why this run's last pool never reported success or failure in time.
-
-**Update (battery v0.3.2):** there are two battery-side reasons every pool could stall before
-reaching `AVAILABLE`, independent of the flintlock history above. Pools weren't seeded before
-v0.3.2, and before flintlock v0.15.2 battery v0.3.1+'s VM ids overflowed the socket path. Both
-are covered in their own sections above and are fixed upstream. Neither has been re-run on real infra yet, so
-the flintlock issues above may not be the whole story. Re-run `tests/battery/` on
-`BATTERY_REF=v0.3.2` + `FLINTLOCK_REF=v0.15.2` before drawing further conclusions about
-flintlock#1200.
+`docs/runbooks/e2e-manual-verification.md` in the battery repo claimed `poolmgrd` never ran the
+`Sweeper`. It has since v0.1.0, and `tests/battery/test_lease_expiry.py` exercises it.
+https://github.com/liquidmetal-dev/battery/issues/115.

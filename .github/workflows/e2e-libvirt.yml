@@ -19,7 +19,7 @@ on:
         default: main
       battery_ref:
         description: battery release tag to test
-        default: v0.3.2
+        default: v0.4.0
       node_count:
         description: Number of flintlock host VMs
         default: "2"

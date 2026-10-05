@@ -132,7 +132,7 @@ def test_battery_defaults(monkeypatch, tmp_path):
 
     cfg = load(dotenv_path=empty_env)
 
-    assert cfg.battery_ref == "v0.3.2"
+    assert cfg.battery_ref == "v0.4.0"
     assert cfg.battery_api_port == 9191
     assert cfg.battery_metrics_port == 9192
     assert cfg.battery_sweep_interval == "10s"

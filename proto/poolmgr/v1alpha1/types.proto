@@ -14,12 +14,16 @@ enum ReplenishmentStrategyType {
   // a pool spec, so the server can reject a request that omits the field instead of silently
   // defaulting to a real strategy.
   REPLENISHMENT_STRATEGY_TYPE_UNSPECIFIED = 0;
-  // IMMEDIATE_ON_LEASE starts provisioning one new VM on every successful claim.
+  // IMMEDIATE_ON_LEASE keeps the pool's target size of warm VMs on top of any leased ones:
+  // every successful claim immediately starts provisioning a replacement. Any shortfall
+  // left over (e.g. a failed provision) is made up on the reconciler's next tick.
   IMMEDIATE_ON_LEASE = 1;
   // MIN_SIZE_THRESHOLD provisions up to the pool's target size whenever the available
   // count drops below min_size.
   MIN_SIZE_THRESHOLD = 2;
-  // REPLACE_ON_DELETE provisions exactly one replacement on every VM deletion.
+  // REPLACE_ON_DELETE keeps the pool's target size of VMs in total, leased included: every
+  // VM deletion immediately starts provisioning a replacement. Any shortfall left over
+  // (e.g. a failed provision) is made up on the reconciler's next tick.
   REPLACE_ON_DELETE = 3;
 }
 
@@ -59,6 +63,13 @@ message PoolSpec {
 
   // MicroVMTemplate is the flintlock MicroVM spec used to provision every VM in the pool.
   // allow_guest_agent is always forced true server-side, regardless of what's set here.
+  //
+  // Everything else is sent to flintlock unchanged for each VM, so an interface's guest_mac
+  // or static address would be shared by all of them. A template that sets either is
+  // rejected unless the pool never holds two VMs at once: size at most 1, a replenishment
+  // strategy other than IMMEDIATE_ON_LEASE and a hook failure policy other than QUARANTINE.
+  // Such a pool is replenished only once no VM of it is left in any phase. Any other pool
+  // must leave both unset, so flintlock generates the MAC and the guest uses DHCP.
   flintlock.types.MicroVMSpec microvm_template = 3;
 
   // Size is the target pool size.
@@ -127,6 +138,9 @@ message LeaseRecord {
   // PoolNamespace is the namespace of the pool identified by pool_name (together they form
   // the pool's PoolRef identity).
   string pool_namespace = 7;
+  // RequestId is the ClaimVMRequest.request_id that created this lease.
+  // Empty if the client did not set one.
+  string request_id = 8;
 }
 
 // EventType names the kind of change an Event describes.
@@ -143,6 +157,8 @@ enum EventType {
   VM_HOOK_FAILED = 8;
   POOL_REPLENISHING = 9;
   POOL_SIZE_BELOW_TARGET = 10;
+  // VM_DELETED_ON_POOL_DELETE is emitted for each VM removed because its pool was deleted.
+  VM_DELETED_ON_POOL_DELETE = 11;
 }
 
 // Event is a single row from the pool manager's event outbox.
@@ -176,4 +192,23 @@ message PoolStatus {
 message Pool {
   PoolSpec spec = 1;
   PoolStatus status = 2;
+}
+
+// Host is the pool manager's registry record for one flintlock host, keyed by name.
+message Host {
+  string name = 1;
+  string address = 2;
+
+  // Cordoned is true when the host should no longer be selected for new VM placements.
+  // Existing VMs on the host are unaffected and wind down through normal lease expiry
+  // or release.
+  bool cordoned = 3;
+
+  // CordonedReason is an optional free-text note set when the host was cordoned.
+  string cordoned_reason = 4;
+
+  // CordonedAt is when the host was last cordoned. Unset if the host has never been cordoned.
+  google.protobuf.Timestamp cordoned_at = 5;
+
+  google.protobuf.Timestamp updated_at = 6;
 }

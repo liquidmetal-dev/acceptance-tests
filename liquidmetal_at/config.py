@@ -159,6 +159,21 @@ class Config:
         prefix = self.microvm_subnet_cidr.split("/")[1]
         return f"{base}.{10 + index}/{prefix}"
 
+    def microvm_dhcp_range(self, node_index: int) -> tuple[str, str]:
+        """First and last address host N's DHCP server leases to pool microVMs.
+
+        Each host has its own bridge on the same subnet, so each gets its own 50-address
+        block (.100-.149, .150-.199, .200-.249): a leased address is then unique across the
+        run, not only per host, and stays clear of the static addresses (.10 upwards).
+        """
+        start = 100 + 50 * node_index
+        if start + 49 > 254:
+            raise ValueError(
+                f"no DHCP range left in {self.microvm_subnet_cidr} for host {node_index}"
+            )
+        base = self.microvm_subnet_cidr.split("/")[0].rsplit(".", 1)[0]
+        return f"{base}.{start}", f"{base}.{start + 49}"
+
     @property
     def microvm_gateway_cidr(self) -> str:
         """Address (CIDR) for the host bridge / guest default gateway, e.g. 192.168.100.1/24."""
@@ -303,7 +318,7 @@ def load(dotenv_path: str | None = None) -> Config:
         # guest-agent + its host-side vsock-connect client are version-locked (same framed
         # protocol); pin both to one release for the guest-agent-over-vsock test.
         guest_agent_version=_env("GUEST_AGENT_VERSION") or "0.1.0",
-        battery_ref=os.environ.get("BATTERY_REF", "v0.3.2"),
+        battery_ref=os.environ.get("BATTERY_REF", "v0.4.0"),
         battery_api_port=int(os.environ.get("BATTERY_API_PORT", "9191")),
         battery_metrics_port=int(os.environ.get("BATTERY_METRICS_PORT", "9192")),
         battery_sweep_interval=os.environ.get("BATTERY_SWEEP_INTERVAL", "10s"),
