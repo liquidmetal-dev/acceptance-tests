@@ -502,13 +502,46 @@ def test_flintlock_ref_below(ref, below):
 
 
 def test_dhcp_range_is_disjoint_per_host_and_clear_of_static_ips(tmp_path):
-    cfg = _dummy_config(tmp_path)
-    assert cfg.microvm_dhcp_range(0) == ("192.168.100.100", "192.168.100.149")
-    assert cfg.microvm_dhcp_range(1) == ("192.168.100.150", "192.168.100.199")
-    assert cfg.microvm_dhcp_range(2) == ("192.168.100.200", "192.168.100.249")
-    # a /24 has no room for a fourth 50-address block
-    with pytest.raises(ValueError, match="DHCP range"):
-        cfg.microvm_dhcp_range(3)
+    cfg = _dummy_config(tmp_path)  # 192.168.100.0/24, two nodes
+    assert cfg.microvm_dhcp_range(0) == ("192.168.100.128", "192.168.100.190")
+    assert cfg.microvm_dhcp_range(1) == ("192.168.100.191", "192.168.100.253")
+    # the static addresses (.10 upwards) and the gateway stay in the lower half
+    assert cfg.microvm_static_ip(0) == "192.168.100.10/24"
+    # a host this run does not have gets no range
+    with pytest.raises(ConfigError, match="NODE_COUNT"):
+        cfg.microvm_dhcp_range(2)
+    cfg.validate_guest_dhcp()
+
+
+@pytest.mark.parametrize(
+    ("cidr", "node_count"),
+    [("192.168.100.0/24", 2), ("192.168.100.0/24", 4), ("192.168.100.0/25", 2),
+     ("10.20.0.0/22", 3)],
+)
+def test_dhcp_ranges_come_from_the_configured_subnet(tmp_path, cidr, node_count):
+    import ipaddress
+    from dataclasses import replace
+
+    cfg = replace(_dummy_config(tmp_path), microvm_subnet_cidr=cidr, node_count=node_count)
+    cfg.validate_guest_dhcp()
+    net = ipaddress.ip_network(cidr)
+    midpoint = net.network_address + net.num_addresses // 2
+    previous_last = None
+    for i in range(node_count):
+        first, last = (ipaddress.ip_address(a) for a in cfg.microvm_dhcp_range(i))
+        # inside the bridge's subnet, in its upper half, and not the broadcast address
+        assert midpoint <= first <= last < net.broadcast_address
+        # no overlap with the previous host's block
+        assert previous_last is None or first > previous_last
+        previous_last = last
+
+
+def test_dhcp_validation_rejects_a_subnet_too_small_for_the_hosts(tmp_path):
+    from dataclasses import replace
+
+    cfg = replace(_dummy_config(tmp_path), microvm_subnet_cidr="192.168.100.0/28", node_count=4)
+    with pytest.raises(ConfigError, match="MICROVM_SUBNET_CIDR.*NODE_COUNT"):
+        cfg.validate_guest_dhcp()
 
 
 def test_build_spec_dhcp_leaves_address_and_mac_unset(tmp_path):

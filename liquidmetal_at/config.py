@@ -7,6 +7,7 @@ namespace so a run is fully isolated and cleanable.
 """
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 import secrets
@@ -44,6 +45,11 @@ _LIBVIRT_BASE_IMAGE_URL = (
     "ubuntu-22.04-server-cloudimg-amd64.img"
 )
 _LIBVIRT_BASE_IMAGE_SHA256 = "0c9811a81e6329acacbb5ae4e701a7650f85cd3f19852cd159d79ab8357b210e"
+
+
+# fewest addresses a host's guest DHCP block may hold: a pool VM, its replacement while the
+# two leases overlap, and headroom
+_MIN_DHCP_BLOCK = 8
 
 
 class ConfigError(RuntimeError):
@@ -162,17 +168,37 @@ class Config:
     def microvm_dhcp_range(self, node_index: int) -> tuple[str, str]:
         """First and last address host N's DHCP server leases to pool microVMs.
 
-        Each host has its own bridge on the same subnet, so each gets its own 50-address
-        block (.100-.149, .150-.199, .200-.249): a leased address is then unique across the
-        run, not only per host, and stays clear of the static addresses (.10 upwards).
+        Each host has its own bridge on the same subnet, so each gets its own block: the
+        upper half of MICROVM_SUBNET_CIDR split evenly between the NODE_COUNT hosts (for the
+        default /24 and two hosts, .128-.190 and .191-.253). A leased address is then unique
+        across the run, not only per host, and the lower half stays free for the gateway and
+        the static addresses (.10 upwards).
         """
-        start = 100 + 50 * node_index
-        if start + 49 > 254:
-            raise ValueError(
-                f"no DHCP range left in {self.microvm_subnet_cidr} for host {node_index}"
+        if not 0 <= node_index < self.node_count:
+            raise ConfigError(
+                f"no DHCP range for host {node_index}: NODE_COUNT={self.node_count}"
             )
-        base = self.microvm_subnet_cidr.split("/")[0].rsplit(".", 1)[0]
-        return f"{base}.{start}", f"{base}.{start + 49}"
+        net = ipaddress.ip_network(self.microvm_subnet_cidr, strict=False)
+        midpoint = net.network_address + net.num_addresses // 2
+        # midpoint .. last host address (the one below broadcast), split between the hosts
+        block = (int(net.broadcast_address) - int(midpoint)) // self.node_count
+        first = midpoint + block * node_index
+        return str(first), str(first + max(block - 1, 0))
+
+    def validate_guest_dhcp(self) -> None:
+        """Raise unless every host's DHCP block (see ``microvm_dhcp_range``) is usable.
+
+        Only battery hosts serve DHCP, so this is checked by the battery suite before it
+        provisions anything, not by ``load()``.
+        """
+        first, last = (ipaddress.ip_address(a) for a in self.microvm_dhcp_range(0))
+        size = int(last) - int(first) + 1
+        if size < _MIN_DHCP_BLOCK:
+            raise ConfigError(
+                f"MICROVM_SUBNET_CIDR={self.microvm_subnet_cidr} is too small for "
+                f"NODE_COUNT={self.node_count}: each host would get {size} DHCP addresses, "
+                f"need at least {_MIN_DHCP_BLOCK}. Use a larger subnet or fewer nodes."
+            )
 
     @property
     def microvm_gateway_cidr(self) -> str:

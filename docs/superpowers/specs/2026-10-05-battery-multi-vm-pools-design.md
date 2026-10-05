@@ -29,9 +29,12 @@ Agreed in the brainstorm:
   can't clash with systemd-resolved on :53), router = the bridge address, DNS option =
   `1.1.1.1,8.8.8.8` (the guest still has to apt-install the guest agent).
 - Each host gets a disjoint range so addresses are unique across the run, not just per host:
-  host *i* serves `.{100+50i}` to `.{149+50i}` of `MICROVM_SUBNET_CIDR`. Static-IP tests keep
-  using `.10+`. `bootstrap_host_battery` already receives `node_index`. Range helper lives on
-  `Config` next to `microvm_static_ip`.
+  the upper half of `MICROVM_SUBNET_CIDR` is split evenly between the `NODE_COUNT` hosts
+  (`.128-.190` and `.191-.253` for the default /24 and two hosts). The lower half keeps the
+  gateway and the static addresses (`.10+`). `Config.microvm_dhcp_range` computes it, and
+  `Config.validate_guest_dhcp`, called by the battery `config` fixture before provisioning,
+  rejects a subnet too small for the host count. (The first version hard-coded
+  `.100+50i`, which only fitted a /24 and three hosts.)
 
 ### 2. A DHCP mode for the pool template
 

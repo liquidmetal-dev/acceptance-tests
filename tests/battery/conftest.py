@@ -37,6 +37,12 @@ def config() -> config_mod.Config:
             "see https://github.com/liquidmetal-dev/flintlock/issues/1226",
             returncode=2,
         )
+    try:
+        # battery hosts serve DHCP to pool VMs; a subnet too small for NODE_COUNT must stop
+        # the run here, not halfway through bootstrap with the infrastructure already up
+        cfg.validate_guest_dhcp()
+    except config_mod.ConfigError as exc:
+        pytest.exit(f"tests/battery/ cannot serve guest DHCP: {exc}", returncode=2)
     return cfg
 
 
