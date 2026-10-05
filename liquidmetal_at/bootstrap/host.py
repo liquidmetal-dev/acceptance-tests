@@ -18,6 +18,8 @@ log = logging.getLogger("bootstrap")
 
 THINPOOL_NAME = "flintlock-thinpool"
 BRIDGE_NAME = "flintlock0"  # host bridge flintlock attaches guest TAP devices to
+# where a battery host's guest DHCP server (dnsmasq on the bridge) records its leases
+GUEST_DHCP_LEASES = "/var/lib/misc/dnsmasq-flintlock.leases"
 
 
 def _erlang_hosts(private_ips: list[str]) -> str:
@@ -38,7 +40,12 @@ def _capacity(cfg: Config) -> tuple[int, int]:
 
 
 def _provision_flintlock(
-    cfg: Config, ssh: SSH, parent_iface: str | None, *, enable_exec_api: bool = False
+    cfg: Config,
+    ssh: SSH,
+    parent_iface: str | None,
+    *,
+    enable_exec_api: bool = False,
+    guest_dhcp_range: tuple[str, str] | None = None,
 ) -> None:
     ssh.run("cloud-init status --wait || true", timeout=1200)
     # provision.sh installs the flintlockd release matching FLINTLOCK_VERSION, defaulting to
@@ -59,6 +66,12 @@ def _provision_flintlock(
         # MicroVMExec service for every VM it provisions (internal/reconciler/provision.go
         # WaitReady), unconditionally - not just when a pool has create/pre_lease commands.
         enable_exec_api=enable_exec_api,
+        # battery only accepts a multi-VM pool whose template uses DHCP, so its hosts serve
+        # DHCP to guests on the bridge. Brigade's guests all have static addresses.
+        enable_guest_dhcp=guest_dhcp_range is not None,
+        dhcp_range_start=guest_dhcp_range[0] if guest_dhcp_range else "",
+        dhcp_range_end=guest_dhcp_range[1] if guest_dhcp_range else "",
+        dhcp_leases_file=GUEST_DHCP_LEASES,
     )
     ssh.put(script, "/tmp/provision_host.sh")
     ssh.sudo("bash /tmp/provision_host.sh", timeout=1800)
@@ -158,7 +171,13 @@ def bootstrap_host_battery(cfg: Config, node: Node, node_index: int) -> None:
     ssh = SSH(host=node.public_ip, user="root", key_path=cfg.ssh_private_key_path)
     ssh.connect(timeout=cfg.timeout_ssh)
     try:
-        _provision_flintlock(cfg, ssh, node.parent_iface, enable_exec_api=True)
+        _provision_flintlock(
+            cfg,
+            ssh,
+            node.parent_iface,
+            enable_exec_api=True,
+            guest_dhcp_range=cfg.microvm_dhcp_range(node_index),
+        )
     finally:
         ssh.close()
     log.info("host%d bootstrapped", node_index)

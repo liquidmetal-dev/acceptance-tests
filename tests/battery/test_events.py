@@ -103,7 +103,8 @@ def test_events_subsequence(config, battery_client, hosts, vm_index):
         log.info("observed event types: %s", [EventType.Name(t) for t in seen])
     finally:
         stop.set()
-        battery_client.delete_pool(pool_name, config.microvm_namespace)
+        # force: a failure above can leave a lease, which a plain delete refuses
+        battery_client.delete_pool(pool_name, config.microvm_namespace, force=True)
         try:
             battery_client.wait_deleted(
                 pool_name, config.microvm_namespace, timeout=config.timeout_pool_available

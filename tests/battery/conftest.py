@@ -21,33 +21,10 @@ from liquidmetal_at.infra import backend
 
 log = logging.getLogger("battery.conftest")
 
-# Blocked on upstream flintlock exec-API bugs that make guest-agent readiness
-# unreliable, so no VM in any pool reliably reaches AVAILABLE. See
-# docs/battery-known-gaps.md for the full history:
-#   - https://github.com/liquidmetal-dev/flintlock/issues/1200 (original hang; the fix in
-#     v0.14.1/v0.15.0 resolved the clear-cut hang case but a re-test on v0.15.1 turned up an
-#     ambiguous recurrence for one VM - not confirmed either way)
-#   - https://github.com/liquidmetal-dev/flintlock/issues/1205 (handshake EOF; fixed in v0.15.1,
-#     confirmed)
-# Two further causes of "never reaches AVAILABLE" have since been fixed and not yet re-run on
-# real infra: event-driven pools were never seeded before battery v0.3.2, and before flintlock
-# v0.15.2 the guest-agent vsock socket path embedded namespace + VM id and overflowed sun_path
-# (battery#94, fixed flintlock-side by flintlock#1227). Remove this once tests/battery/ passes
-# cleanly on BATTERY_REF=v0.3.2 + FLINTLOCK_REF=v0.15.2 (or newer).
-XFAIL_REASON = (
-    "pending a clean e2e run on battery v0.3.2 + flintlock v0.15.2 - see "
-    "docs/battery-known-gaps.md, flintlock#1200/#1205 and battery#94"
-)
-
 # battery v0.3.1+ names each VM <pool-name>-<8 hex>; flintlock before v0.15.2 put that into the
 # guest-agent socket path, overflowing sun_path so every VM fails late with "connect: invalid
 # argument" (flintlock#1226). Fail the session up front instead of timing out every test.
 MIN_FLINTLOCK_REF = "v0.15.2"
-
-
-def pytest_collection_modifyitems(items):
-    for item in items:
-        item.add_marker(pytest.mark.xfail(reason=XFAIL_REASON, strict=False))
 
 
 @pytest.fixture(scope="session")
@@ -60,6 +37,12 @@ def config() -> config_mod.Config:
             "see https://github.com/liquidmetal-dev/flintlock/issues/1226",
             returncode=2,
         )
+    try:
+        # battery hosts serve DHCP to pool VMs; a subnet too small for NODE_COUNT must stop
+        # the run here, not halfway through bootstrap with the infrastructure already up
+        cfg.validate_guest_dhcp()
+    except config_mod.ConfigError as exc:
+        pytest.exit(f"tests/battery/ cannot serve guest DHCP: {exc}", returncode=2)
     return cfg
 
 

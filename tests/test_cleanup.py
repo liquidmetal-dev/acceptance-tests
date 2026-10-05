@@ -414,7 +414,7 @@ def test_build_spec(tmp_path):
     assert s.interfaces[0].address.gateway == "192.168.100.1/24"
     # A per-VM guest MAC makes flintlock's netplan match by MAC (not by name), so the guest
     # NIC binds regardless of eth1/ens4 naming. Deterministic + unique per index.
-    assert s.interfaces[0].guest_mac == "aa:ff:00:00:00:02"
+    assert s.interfaces[0].guest_mac == "aa:ff:00:01:00:02"
     assert "user-data" in s.metadata and "meta-data" in s.metadata
     # Provider defaults to firecracker.
     assert s.provider == "firecracker"
@@ -442,7 +442,7 @@ def test_build_spec_cloudhypervisor(tmp_path):
     # cloud-init read the cidata disk (network-config) — without it the NIC never comes up.
     assert dict(s.kernel.cmdline).get("ds") == "nocloud"
     # guest_mac drives netplan match-by-MAC so CH's ens4-named NIC still binds; index 0 here.
-    assert s.interfaces[0].guest_mac == "aa:ff:00:00:00:00"
+    assert s.interfaces[0].guest_mac == "aa:ff:00:01:00:00"
 
 
 def test_build_spec_default_no_guest_agent(tmp_path):
@@ -499,3 +499,105 @@ def test_flintlock_ref_below(ref, below):
     from liquidmetal_at.config import flintlock_ref_below
 
     assert flintlock_ref_below(ref, "v0.15.2") is below
+
+
+def test_dhcp_range_is_disjoint_per_host_and_clear_of_static_ips(tmp_path):
+    cfg = _dummy_config(tmp_path)  # 192.168.100.0/24, two nodes
+    assert cfg.microvm_dhcp_range(0) == ("192.168.100.128", "192.168.100.190")
+    assert cfg.microvm_dhcp_range(1) == ("192.168.100.191", "192.168.100.253")
+    # the static addresses (.10 upwards) and the gateway stay in the lower half
+    assert cfg.microvm_static_ip(0) == "192.168.100.10/24"
+    # a host this run does not have gets no range
+    with pytest.raises(ConfigError, match="NODE_COUNT"):
+        cfg.microvm_dhcp_range(2)
+    cfg.validate_guest_dhcp()
+
+
+@pytest.mark.parametrize(
+    ("cidr", "node_count"),
+    [("192.168.100.0/24", 2), ("192.168.100.0/24", 4), ("192.168.100.0/25", 2),
+     ("10.20.0.0/22", 3)],
+)
+def test_dhcp_ranges_come_from_the_configured_subnet(tmp_path, cidr, node_count):
+    import ipaddress
+    from dataclasses import replace
+
+    cfg = replace(_dummy_config(tmp_path), microvm_subnet_cidr=cidr, node_count=node_count)
+    cfg.validate_guest_dhcp()
+    net = ipaddress.ip_network(cidr)
+    midpoint = net.network_address + net.num_addresses // 2
+    previous_last = None
+    for i in range(node_count):
+        first, last = (ipaddress.ip_address(a) for a in cfg.microvm_dhcp_range(i))
+        # inside the bridge's subnet, in its upper half, and not the broadcast address
+        assert midpoint <= first <= last < net.broadcast_address
+        # no overlap with the previous host's block
+        assert previous_last is None or first > previous_last
+        previous_last = last
+
+
+def test_dhcp_validation_rejects_a_subnet_too_small_for_the_hosts(tmp_path):
+    from dataclasses import replace
+
+    cfg = replace(_dummy_config(tmp_path), microvm_subnet_cidr="192.168.100.0/28", node_count=4)
+    with pytest.raises(ConfigError, match="MICROVM_SUBNET_CIDR.*NODE_COUNT"):
+        cfg.validate_guest_dhcp()
+
+
+def test_build_spec_dhcp_leaves_address_and_mac_unset(tmp_path):
+    from liquidmetal_at.flintlock import spec
+
+    s = spec.build_spec(_dummy_config(tmp_path), 0, guest_agent=True, network="dhcp")
+    iface = s.interfaces[0]
+    assert iface.device_id == "eth1"
+    # battery rejects a multi-VM pool whose template sets either of these
+    assert not iface.HasField("address")
+    assert not iface.HasField("guest_mac")
+
+
+def test_build_spec_dhcp_refuses_cloudhypervisor(tmp_path):
+    from dataclasses import replace
+
+    from liquidmetal_at.flintlock import spec
+
+    cfg = replace(_dummy_config(tmp_path), microvm_provider="cloudhypervisor")
+    with pytest.raises(ValueError, match="cloudhypervisor"):
+        spec.build_spec(cfg, 0, network="dhcp")
+
+
+def test_build_pool_spec_dhcp_needs_no_index(tmp_path):
+    from liquidmetal_at.battery.spec import build_pool_spec
+
+    cfg = _dummy_config(tmp_path)
+    pool = build_pool_spec(cfg, "p", size=2, flintlock_hosts=["host-0"], network="dhcp")
+    assert pool.size == 2
+    assert not pool.microvm_template.interfaces[0].HasField("address")
+    # a static template still needs a per-pool index for its address
+    with pytest.raises(ValueError, match="index"):
+        build_pool_spec(cfg, "p", size=1, flintlock_hosts=["host-0"])
+
+
+def test_provision_host_guest_dhcp_is_opt_in():
+    common = dict(
+        thinpool="tp",
+        parent_iface="eth1",
+        bridge_name="flintlock0",
+        bridge_addr="192.168.100.1/24",
+        guest_subnet="192.168.100.0/24",
+        flintlock_grpc_port=9090,
+    )
+    assert "dnsmasq" not in render("provision_host.sh.j2", **common)
+
+    host_sh = render(
+        "provision_host.sh.j2",
+        **common,
+        enable_guest_dhcp=True,
+        dhcp_range_start="192.168.100.150",
+        dhcp_range_end="192.168.100.199",
+        dhcp_leases_file="/var/lib/misc/dnsmasq-flintlock.leases",
+    )
+    assert "dhcp-range=192.168.100.150,192.168.100.199,1h" in host_sh
+    # DHCP only: port 53 belongs to systemd-resolved on the host
+    assert "port=0" in host_sh
+    assert "dhcp-leasefile=/var/lib/misc/dnsmasq-flintlock.leases" in host_sh
+    assert "systemctl enable --now dnsmasq-flintlock.service" in host_sh

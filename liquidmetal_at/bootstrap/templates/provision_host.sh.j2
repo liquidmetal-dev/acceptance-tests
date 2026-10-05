@@ -132,6 +132,36 @@ if [ -n "$UPLINK" ]; then
 fi
 iptables -C FORWARD -i "$BRIDGE" -j ACCEPT 2>/dev/null || iptables -A FORWARD -i "$BRIDGE" -j ACCEPT
 iptables -C FORWARD -o "$BRIDGE" -j ACCEPT 2>/dev/null || iptables -A FORWARD -o "$BRIDGE" -j ACCEPT
+{% if enable_guest_dhcp|default(false) %}
+
+echo "== serving DHCP to guests on {{ bridge_name }} =="
+# Guests whose spec sets no static address ask for one by DHCP. dnsmasq answers on the bridge
+# only, with DNS switched off (port=0): port 53 on the host belongs to systemd-resolved.
+command -v dnsmasq >/dev/null || apt-get install -y dnsmasq-base
+cat > /etc/dnsmasq-flintlock.conf <<EOF
+port=0
+interface=$BRIDGE
+bind-interfaces
+dhcp-range={{ dhcp_range_start }},{{ dhcp_range_end }},1h
+dhcp-option=option:router,${BRIDGE_ADDR%/*}
+dhcp-option=option:dns-server,1.1.1.1,8.8.8.8
+dhcp-leasefile={{ dhcp_leases_file }}
+EOF
+cat > /etc/systemd/system/dnsmasq-flintlock.service <<EOF
+[Unit]
+Description=DHCP for flintlock guests on $BRIDGE (acceptance)
+After=network-online.target
+
+[Service]
+ExecStart=$(command -v dnsmasq) --keep-in-foreground --conf-file=/etc/dnsmasq-flintlock.conf
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable --now dnsmasq-flintlock.service
+{% endif %}
 
 echo "== writing flintlockd systemd unit =="
 # provision.sh's 'flintlock' step (via 'all') already installed + started its own

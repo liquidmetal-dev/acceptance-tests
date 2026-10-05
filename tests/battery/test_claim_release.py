@@ -11,7 +11,9 @@ import pytest
 from poolmgr.v1alpha1 import types_pb2  # noqa: E402
 
 from liquidmetal_at.battery.client import NoVMAvailable
+from liquidmetal_at.battery.guest import assert_claimed_vm_accessible
 from liquidmetal_at.battery.spec import build_pool_spec
+from liquidmetal_at.flintlock.spec import static_ip_of
 
 
 @pytest.mark.e2e
@@ -20,10 +22,11 @@ def test_claim_heartbeat_release_replenishes(config, battery_client, hosts, vm_i
     pool_name = "pool-claim"
     flintlock_hosts = [f"host-{i}" for i in range(len(hosts.nodes))]
 
+    index = vm_index()
     spec = build_pool_spec(
         config,
         pool_name,
-        index=vm_index(),
+        index=index,
         size=1,
         flintlock_hosts=flintlock_hosts,
         replenishment_strategy=types_pb2.REPLACE_ON_DELETE,
@@ -40,6 +43,10 @@ def test_claim_heartbeat_release_replenishes(config, battery_client, hosts, vm_i
     assert claimed.lease_id
     assert claimed.vm_uid
     assert claimed.host.address
+    # The claim hands over a VM that works: guest agent answers, SSH and outbound network.
+    assert_claimed_vm_accessible(
+        config, hosts, claimed, expected_ip=static_ip_of(config, index)
+    )
 
     leases = battery_client.list_leases(pool_name, config.microvm_namespace)
     assert [(lease.lease_id, lease.vm_uid) for lease in leases] == [
@@ -52,10 +59,16 @@ def test_claim_heartbeat_release_replenishes(config, battery_client, hosts, vm_i
     battery_client.release_vm(claimed.lease_id)
     assert claimed.lease_id not in battery_client.lease_ids(pool_name, config.microvm_namespace)
 
-    # REPLACE_ON_DELETE: the reconciler provisions exactly one replacement.
-    battery_client.wait_available(
-        pool_name, config.microvm_namespace, 1, timeout=config.timeout_pool_available
+    # REPLACE_ON_DELETE: the reconciler provisions exactly one replacement, a different VM
+    # that is just as usable (it is cloned from the same template, so it has the same address).
+    replacement = battery_client.wait_claimable(
+        pool_name, config.microvm_namespace, timeout=config.timeout_pool_available
     )
+    assert replacement.vm_uid != claimed.vm_uid
+    assert_claimed_vm_accessible(
+        config, hosts, replacement, expected_ip=static_ip_of(config, index)
+    )
+    battery_client.release_vm(replacement.lease_id)
 
     battery_client.delete_pool(pool_name, config.microvm_namespace)
     battery_client.wait_deleted(

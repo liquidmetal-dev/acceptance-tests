@@ -22,7 +22,8 @@ proto:
 		--grpc_python_out=$(GEN) \
 		flapi/microvms.proto fltypes/microvm.proto \
 		poolmgr/v1alpha1/pooladmin.proto poolmgr/v1alpha1/lease.proto \
-		poolmgr/v1alpha1/events.proto poolmgr/v1alpha1/types.proto
+		poolmgr/v1alpha1/events.proto poolmgr/v1alpha1/hostadmin.proto \
+		poolmgr/v1alpha1/types.proto
 	touch $(GEN)/__init__.py $(GEN)/flapi/__init__.py $(GEN)/fltypes/__init__.py \
 		$(GEN)/poolmgr/__init__.py $(GEN)/poolmgr/v1alpha1/__init__.py
 	@echo "Generated stubs in $(GEN)"

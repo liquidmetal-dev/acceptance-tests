@@ -7,7 +7,7 @@ strip). The only rewrite needed is the same clash-avoidance re-point
 `fltypes/microvm.proto`, so `poolmgr.v1alpha1.PoolSpec.microvm_template` resolves against
 the vendored flintlock types.
 
-Usage:  BATTERY_REF=v0.3.2 python scripts/refresh_battery_protos.py
+Usage:  BATTERY_REF=v0.4.0 python scripts/refresh_battery_protos.py
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ REF = os.environ.get("BATTERY_REF", "main")
 BASE = f"https://raw.githubusercontent.com/liquidmetal-dev/battery/{REF}/api/proto/poolmgr/v1alpha1/"
 ROOT = Path(__file__).resolve().parent.parent / "proto" / "poolmgr" / "v1alpha1"
 
-FILES = ("pooladmin.proto", "lease.proto", "events.proto", "types.proto")
+FILES = ("pooladmin.proto", "lease.proto", "events.proto", "hostadmin.proto", "types.proto")
 
 
 def fetch(rel: str) -> str:

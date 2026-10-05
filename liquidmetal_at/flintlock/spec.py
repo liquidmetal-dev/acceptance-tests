@@ -75,11 +75,42 @@ def _b64(s: str) -> str:
     return base64.b64encode(s.encode()).decode()
 
 
+def _set_static_network(
+    cfg: Config, iface: microvm_pb2.NetworkInterface, index: int, *, guest_agent: bool
+) -> None:
+    addr = microvm_pb2.StaticAddress(
+        address=cfg.microvm_static_ip(index), gateway=cfg.microvm_gateway_cidr
+    )
+    if guest_agent:
+        # The guest-agent install pulls from the LiquidMetal apt repo over the network, so the
+        # guest needs a resolver. Set it in the netplan flintlock generates (the durable path;
+        # resolv.conf gets a fallback too, see _cloud_init_guest_agent).
+        addr.nameservers.extend(["1.1.1.1", "8.8.8.8"])
+    iface.address.CopyFrom(addr)
+    # flintlock's generated netplan binds the guest NIC by `match:`. With no guest MAC it
+    # matches by NAME (device_id, "eth1"); Firecracker's guest names its NIC eth1 (it runs
+    # virtio-mmio with `pci=off`, so legacy ethN naming), but Cloud Hypervisor is PCI-based, so
+    # the guest enumerates it under predictable naming (e.g. `ens4`) and `match.name: eth1`
+    # matches nothing → the NIC never comes up → guest unreachable. Setting guest_mac flips the
+    # netplan to `match: {macaddress: ...}`, which is name-agnostic and binds correctly on both
+    # providers. Each VM needs a unique, locally-administered (0x02 bit) unicast MAC.
+    # The 4th octet keeps clear of AA:FF:00:00:00:01, the fixed MAC flintlock gives every VM's
+    # metadata interface (eth0): Firecracker refuses a config with the same MAC on two NICs
+    # ("MAC address is already in use") and exits, while flintlock still reports CREATED.
+    iface.guest_mac = f"aa:ff:00:01:{(index >> 8) & 0xff:02x}:{index & 0xff:02x}"
+
+
 def build_spec(
-    cfg: Config, index: int, *, guest_agent: bool = False
+    cfg: Config, index: int, *, guest_agent: bool = False, network: str = "static"
 ) -> microvm_pb2.MicroVMSpec:
+    """``network="dhcp"`` leaves the NIC's address and ``guest_mac`` unset, see below."""
+    if network not in ("static", "dhcp"):
+        raise ValueError(f"network={network!r} invalid; must be 'static' or 'dhcp'")
+    if network == "dhcp" and cfg.microvm_provider == "cloudhypervisor":
+        # Without guest_mac flintlock's netplan matches the NIC by name (eth1), and a
+        # cloudhypervisor guest names it ens4 or similar, so it would never come up.
+        raise ValueError("network='dhcp' is not supported with the cloudhypervisor provider")
     vm_id = f"{cfg.run_id}-vm{index}"
-    static_ip = cfg.microvm_static_ip(index)
 
     kernel = microvm_pb2.Kernel(image=cfg.effective_kernel_image, add_network_config=True)
     if cfg.effective_kernel_filename:
@@ -98,25 +129,16 @@ def build_spec(
         source=microvm_pb2.VolumeSource(container_source=cfg.microvm_rootfs_image),
     )
 
-    addr = microvm_pb2.StaticAddress(address=static_ip, gateway=cfg.microvm_gateway_cidr)
-    if guest_agent:
-        # The guest-agent install pulls from the LiquidMetal apt repo over the network, so the
-        # guest needs a resolver. Set it in the netplan flintlock generates (the durable path;
-        # resolv.conf gets a fallback too, see _cloud_init_guest_agent).
-        addr.nameservers.extend(["1.1.1.1", "8.8.8.8"])
     iface = microvm_pb2.NetworkInterface(
         device_id="eth1",
         type=microvm_pb2.NetworkInterface.IfaceType.TAP,
-        address=addr,
     )
-    # flintlock's generated netplan binds the guest NIC by `match:`. With no guest MAC it
-    # matches by NAME (device_id, "eth1"); Firecracker's guest names its NIC eth1 (it runs
-    # virtio-mmio with `pci=off`, so legacy ethN naming), but Cloud Hypervisor is PCI-based, so
-    # the guest enumerates it under predictable naming (e.g. `ens4`) and `match.name: eth1`
-    # matches nothing → the NIC never comes up → guest unreachable. Setting guest_mac flips the
-    # netplan to `match: {macaddress: ...}`, which is name-agnostic and binds correctly on both
-    # providers. Each VM needs a unique, locally-administered (0x02 bit) unicast MAC.
-    iface.guest_mac = f"aa:ff:00:00:{(index >> 8) & 0xff:02x}:{index & 0xff:02x}"
+    if network == "static":
+        _set_static_network(cfg, iface, index, guest_agent=guest_agent)
+    # network == "dhcp": no address and no guest_mac, so flintlock's netplan sets dhcp4 and
+    # matches the NIC by name. The host must serve DHCP on the bridge (bootstrap/host.py,
+    # guest_dhcp_range), which also hands out the resolver the guest-agent install needs.
+    # This is the only template battery accepts for a pool that can hold more than one VM.
 
     if guest_agent:
         user_data = _cloud_init_guest_agent(cfg.ssh_public_key, vm_id)

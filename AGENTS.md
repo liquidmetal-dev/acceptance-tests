@@ -13,9 +13,9 @@ see `docs/libvirt-backend.md`). Two independent suites:
   brigade cluster, drives the flintlock gRPC API through brigade, then tears everything down.
 - **battery** (`tests/battery/`) — a single-instance MicroVM warm-pool manager (`poolmgrd`,
   Go, pre-alpha) that dials N flintlockd hosts directly and exposes its own gRPC API
-  (`PoolAdmin`/`Lease`/`Events`). Self-contained (own `conftest.py`), reuses the same DO
+  (`PoolAdmin`/`Lease`/`Events`). Self-contained (own `conftest.py`), reuses the same infra
   provisioning + flintlockd bootstrap. See `docs/battery-known-gaps.md` for constraints found
-  while building it (pool `size` must stay `1`; no per-VM placement info in its API).
+  while building it (one pool VM per host; no per-VM placement info in its API).
 
 ## Setup
 
